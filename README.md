@@ -44,6 +44,10 @@ gusci e fori, e si esporta in 3MF/STL per la stampa o in STEP per altri CAD.
   (`larghezza/2 + 3`, `sin(30)`, `max(a; b)`).
 - **Export**: 3MF con i corpi separati (in Bambu Studio diventano oggetti distinti), STL, STEP con le superfici esatte.
   Su iPad il pulsante "Condividi / Salva su File" apre il foglio di condivisione.
+- **Salvataggio online** (opzionale, Firebase Realtime Database + accesso Google): i progetti si ritrovano su ogni
+  dispositivo, si aggiornano da soli quando un altro dispositivo salva e, se lo stesso progetto viene modificato su
+  due dispositivi, l'app chiede quale versione tenere (o le tiene entrambe). Ogni utente vede solo i suoi progetti
+  (regole in `database.rules.json`); la configurazione va in `src/app/firebase-config.js`.
 - **Progetti** salvati nel browser (IndexedDB), con copia su file `.officina` per backup o passaggio ad altri dispositivi.
 - **Offline**: dopo la prima apertura il service worker tiene in cache tutto, motore compreso.
   Da Safari: Condividi → Aggiungi alla schermata Home per usarla a tutto schermo.

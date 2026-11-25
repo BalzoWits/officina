@@ -23,10 +23,15 @@ async function tx(mode, fn) {
 
 export async function listProjects() {
   const all = (await tx('readonly', (s) => s.getAll())) || [];
-  return all.map((p) => ({ id: p.id, name: p.name, updated: p.updated, features: p.doc.features.length })).sort((a, b) => b.updated - a.updated);
+  return all.map((p) => ({
+    id: p.id, name: p.name, updated: p.updated, features: p.doc ? p.doc.features.length : null,
+    dirty: !!p.dirty, remoteOnly: !!p.remoteOnly, rev: p.rev || 0,
+  })).sort((a, b) => b.updated - a.updated);
 }
+export const listFull = async () => (await tx('readonly', (s) => s.getAll())) || [];
 export const loadProject = (id) => tx('readonly', (s) => s.get(id));
-export const saveProject = (p) => tx('readwrite', (s) => s.put({ ...p, updated: Date.now() }));
+/** keepTime: conserva la data di modifica (sincronizzazione), altrimenti è "adesso". */
+export const saveProject = (p, { keepTime = false } = {}) => tx('readwrite', (s) => s.put({ ...p, updated: keepTime && p.updated ? p.updated : Date.now() }));
 export const deleteProject = (id) => tx('readwrite', (s) => s.delete(id));
 
 export function newId() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }

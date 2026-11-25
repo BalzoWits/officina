@@ -2,6 +2,7 @@
 import { Viewport, bodyColor } from './viewport.js';
 import { Sketcher, newSketchGeo, SKETCH_CMDS } from './sketcher.js';
 import { readSvg, svgToSketch } from './svgimport.js';
+import { Sync, cloudConfigured } from './cloud.js';
 import { initSolver, solve } from './solver.js';
 import { Cad } from './cad.js';
 import { COMMANDS, TYPE_NAMES, TYPE_ICONS, readyToCommit } from './commands.js';
@@ -31,6 +32,92 @@ const sketcher = new Sketcher({
 });
 const cad = new Cad(new URL('./worker.js', import.meta.url));
 
+// ---------- salvataggio online e sincronizzazione ----------
+const sync = new Sync({
+  store,
+  toast,
+  currentId: () => app.project && app.project.id,
+  onStatus: () => renderCloud(),
+  onUser: () => renderCloud(),
+  onSynced: (id, rev) => { if (app.project && app.project.id === id) app.project.rev = rev; },
+  onRemoteDoc: (id, doc, rev) => {
+    if (!app.project || app.project.id !== id) return;
+    app.pendingRemote = { doc, rev };
+    applyPendingRemote();
+  },
+  askConflict: (local, remote) => askConflict(local, remote),
+});
+/** Una versione arrivata da un altro dispositivo si applica solo a comandi e schizzi chiusi. */
+function applyPendingRemote() {
+  const p = app.pendingRemote;
+  if (!p || app.mode !== 'model' || busy) return;
+  app.pendingRemote = null;
+  // modifiche fatte qui e non ancora salvate: non si sovrascrivono, il salvataggio farà scegliere
+  if (JSON.stringify(app.doc) !== app.savedJson) return;
+  app.undo.push(JSON.stringify(app.doc));
+  app.redo = [];
+  app.doc = migrate(p.doc);
+  app.savedJson = JSON.stringify(app.doc);
+  app.project.rev = p.rev;
+  app.project.name = app.doc.name;
+  toast('Progetto aggiornato da un altro dispositivo (Annulla per tornare indietro)', 'ok');
+  renderAll();
+  refresh();
+}
+function askConflict(local, remote) {
+  const when = (t) => (t ? new Date(t).toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' }) : '?');
+  return new Promise((resolve) => {
+    modal(`<h2>Modificato su due dispositivi</h2>
+      <p class="note">«${esc(local.name)}» è stato salvato su un altro dispositivo (${when(remote && remote.updated)}) mentre lo modificavi qui (${when(local.updated)}). Quale versione tieni?</p>
+      <div class="conflict">
+        <button class="btn primary" data-c="local">Questo dispositivo<small>sovrascrive la versione online</small></button>
+        <button class="btn" data-c="remote">L'altro dispositivo<small>le modifiche fatte qui si perdono</small></button>
+        <button class="btn" data-c="both">Tieni entrambe<small>questa diventa una copia separata</small></button>
+      </div>`, (el, close) => {
+      el.addEventListener('click', (e) => { const b = e.target.closest('[data-c]'); if (b) { close(); resolve(b.dataset.c); } });
+    });
+    // chiusa senza scelta: non si perde niente, si tengono entrambe
+    const host = $('#modal');
+    const obs = new MutationObserver(() => { if (host.hidden) { obs.disconnect(); resolve('both'); } });
+    obs.observe(host, { attributes: true });
+  });
+}
+const CLOUD_UI = {
+  out: ['cloud', 'Accedi per salvare online'], sync: ['cloudsync', 'Sincronizzo…'], ok: ['cloudok', 'Salvato online'],
+  pending: ['cloudup', 'Da caricare'], offline: ['cloudoff', 'Offline: caricherò al ritorno della rete'], warn: ['cloudwarn', ''], error: ['cloudwarn', 'Errore di sincronizzazione'],
+};
+function renderCloud() {
+  const b = $('#btnCloud');
+  if (!b) return;
+  const st = sync.status;
+  b.hidden = st.state === 'off';
+  if (st.state === 'off') return;
+  const [ic, label] = CLOUD_UI[st.state] || CLOUD_UI.out;
+  b.innerHTML = icon(ic, 22);
+  b.title = st.msg || label;
+  b.className = `icon cloud ${st.state}`;
+}
+function openAccount() {
+  const u = sync.user;
+  const st = sync.status;
+  modal(`<h2>Salvataggio online</h2>
+    ${u ? `<div class="acct">${u.photo ? `<img src="${esc(u.photo)}" alt="" referrerpolicy="no-referrer">` : ''}<div><b>${esc(u.name || '')}</b><small>${esc(u.email || '')}</small></div></div>
+      <p class="note">${esc(st.msg || (CLOUD_UI[st.state] || [])[1] || '')}. I progetti si salvano online da soli e li ritrovi su ogni dispositivo in cui accedi con questo account. Solo tu puoi vederli.</p>
+      <footer><button class="btn" data-out>Esci</button><span class="grow"></span><button class="btn" data-syncnow>Sincronizza ora</button><button class="btn primary" data-close>Chiudi</button></footer>`
+    : `<p class="note">Accedi con Google per ritrovare i tuoi progetti su PC, iPad e telefono. Ogni modifica si salva online da sola; senza rete continui a lavorare e si carica al ritorno della connessione. Solo tu puoi vedere i tuoi progetti.</p>
+      <footer><button class="btn" data-close>Non ora</button><button class="btn primary" data-in>Accedi con Google</button></footer>`}`, (el, close) => {
+    el.addEventListener('click', async (e) => {
+      const t = e.target.closest('button');
+      if (!t) return;
+      try {
+        if (t.dataset.in !== undefined) { close(); await sync.signIn(); }
+        else if (t.dataset.out !== undefined) { close(); await sync.signOut(); toast('Disconnesso: i progetti restano su questo dispositivo'); }
+        else if (t.dataset.syncnow !== undefined) { close(); await sync.syncAll(); }
+      } catch (err) { toast('Accesso non riuscito: ' + err.message, 'warn'); }
+    });
+  });
+}
+
 async function boot() {
   setLoading('Carico il motore CAD (circa 20 MB la prima volta)…');
   try {
@@ -42,19 +129,28 @@ async function boot() {
   let p = null;
   const last = store.lastProjectId();
   if (last) { try { p = await store.loadProject(last); } catch { /* */ } }
-  if (!p) p = { id: store.newId(), name: 'Primo progetto', doc: store.newDoc('Primo progetto') };
+  if (p && !p.doc) p = (await store.listFull()).find((x) => x.doc) || null;
+  if (!p) p = { id: store.newId(), name: 'Primo progetto', doc: store.newDoc('Primo progetto'), dirty: true };
   await openProject(p);
   setLoading(null);
+  sync.start();
 }
 
 async function openProject(p) {
-  app.project = { id: p.id, name: p.name };
+  if (!p.doc) {
+    try { p = await sync.ensureLocal(p.id); } catch (e) { toast(e.message, 'warn'); return; }
+  }
+  app.project = { id: p.id, name: p.name, rev: p.rev || 0 };
   app.doc = migrate(p.doc);
+  app.savedJson = JSON.stringify(app.doc);
   app.undo = []; app.redo = [];
   app.mode = 'model';
   app.cmd = null;
+  app.pendingRemote = null;
   store.setLastProjectId(p.id);
-  await store.saveProject({ id: p.id, name: p.name, doc: app.doc });
+  await store.saveProject({ id: p.id, name: p.name, doc: app.doc, rev: p.rev || 0, dirty: p.dirty !== undefined ? !!p.dirty : true }, { keepTime: !!p.updated });
+  if (p.dirty || p.dirty === undefined) sync.schedulePush(p.id);
+  sync.watch(p.id);
   vp.setGrid(app.doc.ui.grid !== false);
   renderAll();
   await refresh();
@@ -72,7 +168,9 @@ function migrate(doc) {
 let saveTimer = null;
 function scheduleSave() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => store.saveProject({ id: app.project.id, name: app.doc.name, doc: app.doc }).catch(() => toast('Salvataggio non riuscito', 'warn')), 500);
+  saveTimer = setTimeout(() => (app.savedJson = JSON.stringify(app.doc), store.saveProject({ id: app.project.id, name: app.doc.name, doc: app.doc, rev: app.project.rev || 0, dirty: true }))
+    .then(() => sync.schedulePush(app.project.id))
+    .catch(() => toast('Salvataggio non riuscito', 'warn')), 500);
 }
 function commit(mutate, { rebuild = true } = {}) {
   app.undo.push(JSON.stringify(app.doc));
@@ -1378,38 +1476,54 @@ function download(file) {
 // ---------- progetti ----------
 async function openProjects() {
   const list = await store.listProjects();
-  modal(`<h2>Progetti</h2>
+  const u = sync.user;
+  const badge = (p) => {
+    if (!u) return '';
+    if (p.remoteOnly) return `<span class="badge on">${icon('cloud', 14)} online</span>`;
+    if (p.dirty) return `<span class="badge up">${icon('cloudup', 14)} da caricare</span>`;
+    return `<span class="badge ok">${icon('cloudok', 14)}</span>`;
+  };
+  const acct = cloudConfigured()
+    ? (u ? `<button class="acctbar" data-acct>${icon('cloudok', 18)}<span>Salvati online come <b>${esc(u.name || u.email || '')}</b></span></button>`
+      : `<button class="acctbar off" data-acct>${icon('cloud', 18)}<span>Questi progetti sono solo su questo dispositivo. <b>Accedi con Google</b> per ritrovarli ovunque.</span></button>`)
+    : '';
+  modal(`<h2>Progetti</h2>${acct}
     <div class="proj-actions"><button class="btn primary" data-new>${icon('plus', 16)} Nuovo</button><button class="btn" data-import>${icon('import', 16)} Apri file .officina</button><button class="btn" data-export>${icon('export', 16)} Salva copia su file</button></div>
-    <div class="projects">${list.map((p) => `<div class="proj ${p.id === app.project.id ? 'on' : ''}"><button class="name" data-open="${p.id}"><b>${esc(p.name)}</b><small>${p.features} feature · ${new Date(p.updated).toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' })}</small></button>
+    <div class="projects">${list.map((p) => `<div class="proj ${p.id === app.project.id ? 'on' : ''}"><button class="name" data-open="${p.id}"><b>${esc(p.name)}</b><small>${p.features != null ? `${p.features} feature · ` : ''}${new Date(p.updated).toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' })} ${badge(p)}</small></button>
       <button class="icon" data-dup="${p.id}" title="Duplica">${icon('plus', 18)}</button><button class="icon" data-del="${p.id}" title="Elimina">${icon('trash', 18)}</button></div>`).join('')}</div>
     <footer><button class="btn" data-close>Chiudi</button></footer>`, (el, close) => {
     el.addEventListener('click', async (e) => {
       const t = e.target.closest('button');
       if (!t) return;
+      if (t.dataset.acct !== undefined) { close(); openAccount(); return; }
       if (t.dataset.new !== undefined) {
         const name = await promptText('Nome del nuovo progetto', 'Nuovo progetto');
         if (!name) return;
         close();
-        await openProject({ id: store.newId(), name, doc: store.newDoc(name) });
+        await openProject({ id: store.newId(), name, doc: store.newDoc(name), dirty: true });
       } else if (t.dataset.open) {
         if (t.dataset.open === app.project.id) { close(); return; }
         const p = await store.loadProject(t.dataset.open);
         close();
         await openProject(p);
       } else if (t.dataset.dup) {
-        const p = await store.loadProject(t.dataset.dup);
+        let p = await store.loadProject(t.dataset.dup);
+        if (!p.doc) { try { p = await sync.ensureLocal(p.id); } catch (err) { toast(err.message, 'warn'); return; } }
         const name = `${p.name} (copia)`;
         p.doc.name = name;
-        await store.saveProject({ id: store.newId(), name, doc: p.doc });
+        const nid = store.newId();
+        await store.saveProject({ id: nid, name, doc: p.doc, rev: 0, dirty: true });
+        sync.schedulePush(nid);
         close(); openProjects();
       } else if (t.dataset.del) {
         if (t.dataset.confirm !== '1') { t.dataset.confirm = '1'; t.classList.add('danger'); t.title = 'Tocca di nuovo per eliminare'; toast('Tocca di nuovo il cestino per eliminare', 'warn'); return; }
         await store.deleteProject(t.dataset.del);
+        sync.remove(t.dataset.del);
         if (t.dataset.del === app.project.id) {
           const rest = await store.listProjects();
           close();
           if (rest.length) await openProject(await store.loadProject(rest[0].id));
-          else await openProject({ id: store.newId(), name: 'Nuovo progetto', doc: store.newDoc('Nuovo progetto') });
+          else await openProject({ id: store.newId(), name: 'Nuovo progetto', doc: store.newDoc('Nuovo progetto'), dirty: true });
         } else { close(); openProjects(); }
       } else if (t.dataset.export !== undefined) {
         const file = new File([JSON.stringify(app.doc)], `${safeName(app.doc.name)}.officina`, { type: 'application/json' });
@@ -1423,7 +1537,7 @@ async function openProjects() {
             const doc = JSON.parse(await inp.files[0].text());
             if (doc.app !== 'officina') throw new Error('Non è un progetto Officina');
             close();
-            await openProject({ id: store.newId(), name: doc.name, doc });
+            await openProject({ id: store.newId(), name: doc.name, doc, dirty: true });
           } catch (err) { toast(err.message, 'warn'); }
         };
         inp.click();
@@ -1539,6 +1653,7 @@ function renderAll() {
   document.body.dataset.mode = app.mode;
   $('#sketchStatus').hidden = app.mode !== 'sketch';
   if (app.mode !== 'model') { hideQuick(); $('#selbar').hidden = true; }
+  if (app.mode === 'model' && app.pendingRemote) setTimeout(applyPendingRemote, 0);
   if (app.mode === 'model' || app.mode === 'sketch') setHint('');
   renderWelcome();
 }
@@ -1622,6 +1737,7 @@ function openHelp(first = app.mode === 'sketch' ? 'sketch' : 'model') {
 // ---------- pulsanti fissi ----------
 $('#btnHelp').onclick = () => openHelp();
 $('#btnProjects').onclick = openProjects;
+$('#btnCloud').onclick = openAccount;
 $('#btnTree').onclick = () => $('#browser').classList.toggle('open');
 $('#btnUndo').onclick = undo;
 $('#btnRedo').onclick = redo;
@@ -1674,7 +1790,7 @@ document.addEventListener('dblclick', (e) => { if (!e.target.closest('input')) e
 try { sketcher.snapGrid = localStorage.getItem('officina.snap') !== '0'; } catch { sketcher.snapGrid = true; }
 
 // aggancio per i test automatici e la console
-window.officina = { app, vp, sketcher, cad, startSketch, openCommand, okCommand, cancelCommand, finishSketch, refresh, applyPick, activePickField };
+window.officina = { app, vp, sketcher, cad, commit, sync, openProject, store, startSketch, openCommand, okCommand, cancelCommand, finishSketch, refresh, applyPick, activePickField };
 
 for (const el of document.querySelectorAll('[data-icon]')) el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon, el.classList.contains('btn') ? 18 : 22));
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { /* senza offline */ });

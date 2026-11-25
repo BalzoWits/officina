@@ -385,3 +385,25 @@ ul.help li .ic { color: var(--accent); flex: none; margin-top: 1px; }
 .sk-preview.bad { stroke: var(--bad); }
 
 .sk-snap.grid { stroke: var(--accent); fill: rgba(31, 122, 224, .18); stroke-width: 1.6; }
+
+/* ---------- salvataggio online ---------- */
+button.icon.cloud { color: var(--ink2); }
+button.icon.cloud.ok { color: var(--ok); }
+button.icon.cloud.pending, button.icon.cloud.sync { color: var(--accent); }
+button.icon.cloud.sync .ic { animation: pulse 1s ease-in-out infinite; }
+button.icon.cloud.offline { color: #8b97a4; }
+button.icon.cloud.warn, button.icon.cloud.error { color: var(--warn); }
+@keyframes pulse { 50% { opacity: .35; } }
+.acctbar { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 14px; margin-bottom: 12px; border-radius: 12px; background: #eaf7ef; color: #14532d; font-size: 14px; }
+.acctbar.off { background: var(--accent-soft); color: #173f6d; }
+.acct { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.acct img { width: 44px; height: 44px; border-radius: 50%; }
+.acct b { display: block; }
+.acct small { color: var(--ink2); }
+.badge { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 1px 7px; border-radius: 10px; font-size: 12px; vertical-align: middle; }
+.badge.ok { color: var(--ok); }
+.badge.up { background: var(--accent-soft); color: var(--accent); }
+.badge.on { background: #eef1f5; color: var(--ink2); }
+.conflict { display: grid; gap: 8px; margin-top: 14px; }
+.conflict .btn { height: auto; min-height: 56px; flex-direction: column; align-items: flex-start; padding: 8px 16px; }
+.conflict .btn small { font-weight: 400; font-size: 12.5px; opacity: .85; }
