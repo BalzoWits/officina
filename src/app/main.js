@@ -766,7 +766,7 @@ const MODEL_TOOLS = [
 const SKETCH_TOOLS = [
   { group: 'Disegna' },
   ['select', 'Seleziona', 'tool'], ['line', 'Linea', 'tool'], ['rect', 'Rettangolo', 'tool'], ['circle', 'Cerchio', 'tool'],
-  ['arc', 'Arco', 'tool'], ['point', 'Punto', 'tool'],
+  ['arc', 'Arco', 'tool'], ['point', 'Punto', 'tool'], ['magnet', 'Magnete', 'toggle'],
   { group: 'Misura' },
   ['dim', 'Quota', 'tool'],
   { group: 'Modifica' },
@@ -791,7 +791,7 @@ function renderTopbar() {
   tb.innerHTML = tools.map((t, i) => {
     if (t.group) return `<span class="grp">${t.group}</span>`;
     const [ic, label, kind, name] = t;
-    const on = sk ? (kind === 'tool' && sketcher.tool === (name || ic)) || (kind === 'cons' && sketcher.tool === 'c:' + ic) : (app.mode === 'command' && app.cmd.type === ic) || (ic === 'sketch' && app.mode === 'pickPlane');
+    const on = sk ? (kind === 'tool' && sketcher.tool === (name || ic)) || (kind === 'cons' && sketcher.tool === 'c:' + ic) || (kind === 'toggle' && ic === 'magnet' && sketcher.snapGrid) : (app.mode === 'command' && app.cmd.type === ic) || (ic === 'sketch' && app.mode === 'pickPlane');
     return `<button class="tool ${on ? 'on' : ''}" data-i="${i}" title="${label}">${icon(ic)}<span>${label}</span></button>`;
   }).join('');
   tb.className = sk ? 'sketch' : '';
@@ -802,7 +802,11 @@ $('#toolbar').addEventListener('click', (e) => {
   const t = (app.mode === 'sketch' ? SKETCH_TOOLS : MODEL_TOOLS)[+b.dataset.i];
   if (app.mode === 'sketch') {
     const [name, , kind, toolName] = t;
-    if (kind === 'tool') sketcher.setTool(toolName || name);
+    if (kind === 'toggle' && name === 'magnet') {
+      sketcher.setSnapGrid(!sketcher.snapGrid);
+      try { localStorage.setItem('officina.snap', sketcher.snapGrid ? '1' : '0'); } catch { /* */ }
+      toast(sketcher.snapGrid ? 'Magnete acceso: i punti si agganciano ai quadretti' : 'Magnete spento', 'ok');
+    } else if (kind === 'tool') sketcher.setTool(toolName || name);
     // vincolo: se la selezione è già giusta si applica, altrimenti si entra nello strumento e si toccano gli elementi
     else if (kind === 'cons') { if (sketcher.sel.size && sketcher.consReady(name)) sketcher.applyConstraint(name); else sketcher.setTool('c:' + name); }
     else if (name === 'construction') sketcher.toggleConstruction();
@@ -1665,6 +1669,9 @@ window.addEventListener('keydown', (e) => {
 // evita lo zoom della pagina col doppio tocco e il pinch fuori dalla vista (iPad)
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => { if (!e.target.closest('input')) e.preventDefault(); });
+
+// magnete sulla griglia: acceso salvo scelta diversa ricordata
+try { sketcher.snapGrid = localStorage.getItem('officina.snap') !== '0'; } catch { sketcher.snapGrid = true; }
 
 // aggancio per i test automatici e la console
 window.officina = { app, vp, sketcher, cad, startSketch, openCommand, okCommand, cancelCommand, finishSketch, refresh, applyPick, activePickField };

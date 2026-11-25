@@ -383,3 +383,5 @@ ul.help li .ic { color: var(--accent); flex: none; margin-top: 1px; }
   font-size: 14.5px; animation: pop .2s ease;
 }
 .sk-preview.bad { stroke: var(--bad); }
+
+.sk-snap.grid { stroke: var(--accent); fill: rgba(31, 122, 224, .18); stroke-width: 1.6; }

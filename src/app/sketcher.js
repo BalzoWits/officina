@@ -221,8 +221,17 @@ export class Sketcher {
       }
       return { x, y, curve: h.id };
     }
+    if (this.snapGrid) { const g = this.gridStep(); return { x: Math.round(x / g) * g, y: Math.round(y / g) * g, grid: true }; }
     return { x, y };
   }
+
+  /** Passo della griglia visibile (lo stesso dei quadretti disegnati). */
+  gridStep() {
+    let step = 1;
+    for (const k of [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]) { step = k; if (k * this.view.s >= 22) break; }
+    return step;
+  }
+  setSnapGrid(on) { this.snapGrid = on; if (this.lastCursor && this.state) this.trackCursor(...this.lastCursor, this.lastPointer || 'mouse'); this.render(); }
 
   /** Crea davvero il punto di una posa (o riusa quello agganciato). */
   materialize(pl) {
@@ -1148,7 +1157,8 @@ export class Sketcher {
       this.render();
       return;
     }
-    const drags = d.kind === 'point' ? [{ id: d.id, x, y }] : d.ids.map((id, i) => ({ id, x: x + d.off[i][0], y: y + d.off[i][1] }));
+    const sn = (v) => (this.snapGrid ? Math.round(v / this.gridStep()) * this.gridStep() : v);
+    const drags = d.kind === 'point' ? [{ id: d.id, x: sn(x), y: sn(y) }] : d.ids.map((id, i) => ({ id, x: x + d.off[i][0], y: y + d.off[i][1] }));
     // aggiorno subito le coordinate e poi lascio che il solver rispetti i vincoli
     this.resolve(drags);
     this.render();
@@ -1462,7 +1472,7 @@ export class Sketcher {
     // griglia adattiva
     const v = this.view;
     let step = 1;
-    for (const k of [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]) { step = k; if (k * v.s >= 22) break; }
+    step = this.gridStep();
     const [x0, y1] = this.toK(0, 0), [x1, y0] = this.toK(W, H);
     const grid = [], major = [];
     for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) { const sx = f1(S(x, 0)[0]); (Math.abs(x / (step * 5) - Math.round(x / (step * 5))) < 1e-6 ? major : grid).push(`M${sx} 0V${H}`); }
@@ -1637,6 +1647,7 @@ export class Sketcher {
     const out = [];
     const snap = (p) => {
       if (p.point || p.curve) { const [x, y] = S(p.x, p.y); out.push(`<circle cx="${f1(x)}" cy="${f1(y)}" r="9" class="sk-snap ${p.point ? 'pt' : ''}"/>`); }
+      else if (p.grid) { const [x, y] = S(p.x, p.y); out.push(`<path d="M${f1(x - 6)} ${f1(y)}L${f1(x)} ${f1(y - 6)}L${f1(x + 6)} ${f1(y)}L${f1(x)} ${f1(y + 6)}Z" class="sk-snap grid"/>`); }
     };
     if (st.kind === 'line') {
       const a = st.lastId ? this.P(st.lastId) : st.start;

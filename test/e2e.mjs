@@ -35,6 +35,7 @@ try {
       // progetto pulito per il test
       const { app } = window.officina;
       app.doc.features = []; app.doc.params = [{ name: 'alt', expr: '12' }];
+      window.officina.sketcher.snapGrid = false; // questa prova clicca su posizioni esatte
       await window.officina.refresh();
     });
     await idle();

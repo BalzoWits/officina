@@ -47,6 +47,7 @@ const P = {
   offset: '<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7.5" y="7.5" width="9" height="9" rx="1" stroke-dasharray="2.5 2"/>',
   trim: '<path d="M3 12h7M14 12h7" /><path d="M10 12h4" stroke-dasharray="1.5 1.5" opacity=".5"/><path d="M12 4v4M12 16v4"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/><path d="M8.5 16.5L15 9M15.5 16.5L9 9"/>',
   select3: '<path d="M5 3l14 8-6 1.5L10 19z"/><path d="M15 17h6M18 14v6"/>',
+  magnet: '<path d="M6 3v8a6 6 0 0012 0V3"/><path d="M6 3h4v8a2 2 0 004 0V3h4"/><path d="M6 7h4M14 7h4"/>',
   svg: '<path d="M4 18c3-10 6-12 8-6s5 4 8-6"/><circle cx="4" cy="18" r="1.6"/><circle cx="20" cy="6" r="1.6"/>',
   finish: '<path d="M4 12l5 5L20 6"/>',
   view: '<path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/>',
