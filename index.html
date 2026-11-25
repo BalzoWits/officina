@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Officina">
+<meta name="theme-color" content="#f7f8fa">
+<meta name="description" content="CAD parametrico essenziale per iPad: schizzi vincolati, estrusioni, raccordi, export 3MF/STL/STEP.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<title>Officina</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-mode="loading">
+<header id="topbar">
+  <div class="tb-left">
+    <button id="btnProjects" class="icon" data-icon="menu" title="Progetti" aria-label="Progetti"></button>
+    <button id="btnTree" class="icon" data-icon="tree" title="Corpi, schizzi e parametri" aria-label="Corpi e schizzi"></button>
+    <button id="docName" title="Rinomina il progetto"></button>
+  </div>
+  <nav id="toolbar" aria-label="Strumenti"></nav>
+  <div class="tb-right">
+    <button id="btnUndo" class="icon" data-icon="undo" title="Annulla" aria-label="Annulla"></button>
+    <button id="btnRedo" class="icon" data-icon="redo" title="Ripeti" aria-label="Ripeti"></button>
+    <span id="topRight">
+      <button id="btnParams" class="icon" data-icon="params" title="Parametri" aria-label="Parametri"></button>
+      <button id="btnExport" class="btn primary" data-icon="export">Esporta</button>
+    </span>
+    <span id="sketchFinish" hidden>
+      <button class="btn" data-discard>Scarta</button>
+      <button class="btn primary" data-finish data-icon="finish">Fine schizzo</button>
+    </span>
+  </div>
+</header>
+<main id="stage">
+  <div id="viewport"></div>
+  <aside id="browser" aria-label="Corpi e schizzi"></aside>
+  <section id="panel" hidden></section>
+  <div id="viewbar" aria-label="Viste">
+    <button data-view="fit" data-icon="home" title="Adatta" aria-label="Adatta"></button>
+    <button data-view="iso">Iso</button>
+    <button data-view="top">Alto</button>
+    <button data-view="front">Fronte</button>
+    <button data-view="right">Destra</button>
+  </div>
+  <div id="sketchStatus" hidden></div>
+  <div id="hint" hidden></div>
+  <div id="status"></div>
+</main>
+<footer id="timeline" aria-label="Cronologia"></footer>
+<div id="popover" hidden></div>
+<div id="modal" hidden></div>
+<div id="toasts" aria-live="polite"></div>
+<div id="loading"><div class="spinner"></div><p>Avvio…</p></div>
+<script type="module" src="dist/app.js"></script>
+</body>
+</html>
