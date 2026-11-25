@@ -178,7 +178,8 @@ try {
     await page.waitForTimeout(700);
     const p = await page.evaluate(() => { const o = window.officina; const s = o.vp.project([0, -60, 0]); const r = o.vp.canvas.getBoundingClientRect(); return [s[0] + r.left, s[1] + r.top]; });
     await page.mouse.click(...p);
-    await page.waitForSelector('#popover .menu');
+    // il tocco seleziona la forma e mostra la barra dei comandi (niente menu sopra la forma)
+    await page.waitForSelector('#selbar:not([hidden])');
     await page.screenshot({ path: 'out/38-menu-forma.png' });
   });
 } finally {

@@ -20,6 +20,11 @@ gusci e fori, e si esporta in 3MF/STL per la stampa o in STEP per altri CAD.
 - **Strumenti dello schizzo a campi**: Specchia (Oggetti + Linea di specchio), Raccordo e Smusso 2D (Angoli +
   misura), Offset (Contorno + distanza + lato), più **Taglia** a tocco. Quello che hai selezionato prima entra già
   nei campi.
+- **Frecce di controllo** nella vista 3D per Estrudi, Foro, Raccordo, Smusso, Guscio, Rivoluzione (maniglia ad arco)
+  e Sposta (frecce X/Y/Z): si trascinano, il passo si adatta allo zoom; una misura legata a un parametro ha la freccia
+  grigia e bloccata, per non perdere il legame.
+- **Forme degli schizzi**: un tocco le seleziona (blu pieno, anche più di una) e la barra in basso propone Estrudi,
+  Rivoluzione, Modifica schizzo.
 - **Selezione nel 3D**: tocchi spigoli e facce, compare la barra con Raccordo/Smusso/Guscio/Sposta; anche i comandi
   della barra in alto usano la selezione già fatta.
 - **Import SVG** come schizzo: piano, larghezza finale e posizione si scelgono all'import; le curve di Bézier

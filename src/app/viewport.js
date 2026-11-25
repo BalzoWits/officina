@@ -64,6 +64,7 @@ export class Viewport {
 
     this.controls.addEventListener('change', () => { this.dirty = true; });
     this.setupTap();
+    this.setupHandles();
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(host);
     this.resize();
@@ -144,6 +145,7 @@ export class Viewport {
 
   render() {
     this.dirty = false;
+    this.updateHandles();
     const cam = this.camera;
     this.sun.position.copy(cam.position).add(new THREE.Vector3(0, 0, 1).multiplyScalar(this.sceneRadius() * 0.5));
     this.sun.target.position.copy(this.controls.target);
@@ -372,6 +374,171 @@ export class Viewport {
     this.canvas.addEventListener('pointerleave', () => { if (this.hoverHandler) this.hoverHandler(null); });
   }
   onTap(fn) { this.tapHandlers.push(fn); }
+
+  /** Centro e diagonale dei corpi indicati (tra quelli selezionabili). */
+  boundsOf(ids) {
+    const box = new THREE.Box3();
+    for (const id of ids) { const e = this.pickBodies.get(id); if (e && e.mesh) { e.mesh.geometry.computeBoundingBox(); box.union(e.mesh.geometry.boundingBox); } }
+    if (box.isEmpty()) return null;
+    return { center: box.getCenter(new THREE.Vector3()).toArray(), size: box.getSize(new THREE.Vector3()).length() };
+  }
+
+  // ---------- frecce di controllo (maniglie trascinabili dei comandi) ----------
+  /**
+   * list: [{ id, kind:'linear', origin, dir, value, offset?, scale?, min?, color?, locked? }
+   *        | { id, kind:'arc', center, axis, ref, radius, value (gradi), locked? }]
+   */
+  setHandles(list) {
+    if (this.hdrag) { this.pendingHandles = list || []; return; }
+    if (this.handleGroup) {
+      this.overlay.remove(this.handleGroup);
+      this.handleGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    }
+    this.handles = (list || []).map((h) => ({ offset: 0, scale: 1, ...h }));
+    const g = new THREE.Group();
+    for (const h of this.handles) {
+      const color = h.locked ? 0x9aa4ae : (h.color ?? ACCENT);
+      const mat = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
+      h.knob = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14), mat);
+      h.line = new LineSegments2(new LineSegmentsGeometry(), this.lineMat(color, 2.5, { depthTest: false, transparent: true }));
+      h.knob.renderOrder = h.line.renderOrder = 20;
+      g.add(h.knob, h.line);
+      if (h.kind === 'linear') {
+        h.cone = new THREE.Mesh(new THREE.ConeGeometry(0.75, 2.2, 20), mat);
+        h.cone.renderOrder = 20;
+        g.add(h.cone);
+      }
+    }
+    this.handleGroup = g;
+    this.overlay.add(g);
+    this.updateHandles();
+    this.dirty = true;
+  }
+
+  /** Millimetri per pixel attorno a un punto (per tenere costante la grandezza a schermo). */
+  worldPerPx(p) {
+    if (this.camera === this.persp) return (2 * this.persp.position.distanceTo(p) * Math.tan((this.persp.fov * Math.PI) / 360)) / this.h;
+    return (this.ortho.top - this.ortho.bottom) / this.h;
+  }
+
+  handlePos(h, value = h.value) {
+    if (h.kind === 'linear') {
+      const t = h.offset + value * h.scale;
+      return new THREE.Vector3(h.origin[0] + h.dir[0] * t, h.origin[1] + h.dir[1] * t, h.origin[2] + h.dir[2] * t);
+    }
+    const a = (value * Math.PI) / 180;
+    const u = new THREE.Vector3(...h.ref), ax = new THREE.Vector3(...h.axis);
+    const w = new THREE.Vector3().crossVectors(ax, u);
+    return new THREE.Vector3(...h.center).addScaledVector(u, Math.cos(a) * h.radius).addScaledVector(w, Math.sin(a) * h.radius);
+  }
+
+  updateHandles() {
+    if (!this.handles || !this.handles.length) return;
+    for (const h of this.handles) {
+      const p = this.handlePos(h);
+      const s = this.worldPerPx(p) * 8;
+      h.knob.position.copy(p);
+      h.knob.scale.setScalar(s);
+      if (h.kind === 'linear') {
+        const d = new THREE.Vector3(...h.dir);
+        const sign = h.offset + h.value * h.scale >= 0 ? 1 : -1;
+        h.cone.position.copy(p).addScaledVector(d, sign * s * 2.2);
+        h.cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().multiplyScalar(sign));
+        h.cone.scale.setScalar(s);
+        h.line.geometry.setPositions([...h.origin, p.x, p.y, p.z]);
+      } else {
+        const pts = [];
+        const n = 48;
+        for (let i = 0; i < n; i++) {
+          const a = this.handlePos(h, (h.value * i) / n), b = this.handlePos(h, (h.value * (i + 1)) / n);
+          pts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+        }
+        h.line.geometry.setPositions(pts.length ? pts : [0, 0, 0, 0, 0, 0]);
+      }
+    }
+  }
+
+  /** Passo "tondo" adattivo: almeno ~6 pixel per passo. */
+  niceStep(pxPerUnit, steps) {
+    for (const s of steps) if (s * pxPerUnit >= 6) return s;
+    return steps[steps.length - 1];
+  }
+
+  setupHandles() {
+    const el = this.canvas;
+    // in cattura: la maniglia ha la precedenza sulla rotazione della vista
+    el.addEventListener('pointerdown', (e) => {
+      if (!this.handles || !this.handles.length) return;
+      const r = el.getBoundingClientRect();
+      const x = e.clientX - r.left, y = e.clientY - r.top;
+      const tol = e.pointerType === 'touch' ? 28 : 16;
+      let best = null, bd = tol;
+      for (const h of this.handles) {
+        const s = this.project(this.handlePos(h).toArray());
+        const d = Math.hypot(s[0] - x, s[1] - y);
+        if (d < bd) { bd = d; best = h; }
+      }
+      if (!best) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      if (best.locked) { if (this.onHandleLocked) this.onHandleLocked(best); return; }
+      this.hdrag = { h: best, id: e.pointerId };
+      el.setPointerCapture(e.pointerId);
+      this.controls.enabled = false;
+    }, { capture: true });
+    el.addEventListener('pointermove', (e) => {
+      const dg = this.hdrag;
+      if (!dg || e.pointerId !== dg.id) return;
+      e.stopImmediatePropagation();
+      const r = el.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(this.ndc(e.clientX - r.left, e.clientY - r.top), this.camera);
+      const h = dg.h;
+      let v;
+      if (h.kind === 'linear') {
+        // punto della retta della maniglia più vicino al raggio del dito
+        const O = new THREE.Vector3(...h.origin), D = new THREE.Vector3(...h.dir);
+        const P = ray.ray.origin, V = ray.ray.direction;
+        const a = D.dot(D), b = D.dot(V), c = V.dot(V);
+        const w = O.clone().sub(P);
+        const den = a * c - b * b;
+        if (Math.abs(den) < 1e-9) return;
+        const t = (b * V.dot(w) - c * D.dot(w)) / den;
+        v = (t - h.offset) / h.scale;
+        const step = this.niceStep(h.scale / this.worldPerPx(this.handlePos(h)), [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50]);
+        v = Math.round(v / step) * step;
+        if (h.min != null) v = Math.max(h.min, v);
+      } else {
+        const C = new THREE.Vector3(...h.center), A = new THREE.Vector3(...h.axis);
+        const hit = new THREE.Vector3();
+        if (!ray.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(A, C), hit)) return;
+        const u = new THREE.Vector3(...h.ref), wv = new THREE.Vector3().crossVectors(A, u);
+        const q = hit.sub(C);
+        let ang = (Math.atan2(q.dot(wv), q.dot(u)) * 180) / Math.PI;
+        // continuità oltre i 180°: il valore più vicino al precedente
+        while (ang - h.value > 180) ang -= 360;
+        while (h.value - ang > 180) ang += 360;
+        const pxPerDeg = (h.radius / this.worldPerPx(C)) * (Math.PI / 180);
+        const step = this.niceStep(pxPerDeg, [0.5, 1, 5, 15, 45]);
+        v = Math.max(step, Math.min(360, Math.round(ang / step) * step));
+      }
+      if (v === h.value) return;
+      h.value = v;
+      this.dirty = true;
+      if (this.onHandle) this.onHandle(h.id, v, false);
+    }, { capture: true });
+    const end = (e) => {
+      const dg = this.hdrag;
+      if (!dg || e.pointerId !== dg.id) return;
+      e.stopImmediatePropagation();
+      this.hdrag = null;
+      this.controls.enabled = !this.sketchMode;
+      if (this.onHandle) this.onHandle(dg.h.id, dg.h.value, true);
+      if (this.pendingHandles) { const p = this.pendingHandles; this.pendingHandles = null; this.setHandles(p); }
+    };
+    el.addEventListener('pointerup', end, { capture: true });
+    el.addEventListener('pointercancel', end, { capture: true });
+  }
 
   ndc(x, y) { return new THREE.Vector2((x / this.w) * 2 - 1, -(y / this.h) * 2 + 1); }
   project(p) {

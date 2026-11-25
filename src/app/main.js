@@ -235,9 +235,9 @@ function render3D() {
       ov.regions = cmd.draft.regions.map((r) => matchRegion(rs, r)).filter(Boolean);
       ov.selected = ov.regions.map((_, i) => i);
     } else if (!cmd && app.mode === 'model') {
-      // forme chiuse in azzurro chiaro: si toccano per estruderle
+      // forme chiuse in azzurro chiaro: si toccano per selezionarle (blu pieno)
       ov.regions = regionsOf(f);
-      ov.selected = [];
+      ov.selected = app.msel.sketch === f.id ? app.msel.regions.map((r) => ov.regions.indexOf(matchRegion(ov.regions, r))).filter((i) => i >= 0) : [];
     }
     if (field && field.pick === 'sketchLine' && isCurrent) {
       // anche gli assi dello schizzo valgono come asse di rivoluzione
@@ -259,7 +259,102 @@ function render3D() {
   }
   vp.setSelection(sel);
   vp.setPlanesVisible(app.mode === 'pickPlane' || !!(field && (field.pick === 'planarFace')) || !!app.doc.ui.showPlanes);
+  let hs = [];
+  try { hs = cmd ? commandHandles(cmd) : []; } catch { hs = []; }
+  vp.setHandles(hs);
 }
+
+// ---------- frecce di controllo sul modello ----------
+const AXIS_DIR = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] };
+const vnorm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const vadd = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
+const isPlainNumber = (s) => String(s ?? '').trim() !== '' && Number.isFinite(Number(String(s).replace(',', '.')));
+
+/** Maniglie da mostrare per il comando aperto: una per ogni misura trascinabile. */
+function commandHandles(cmd) {
+  const d = cmd.draft;
+  const scope = evalParams(app.doc.params).scope;
+  const val = (k) => { try { return evaluate(d[k], scope); } catch { return null; } };
+  const mk = (k, h) => { const v = val(k); return v == null ? null : { id: k, value: v, locked: !isPlainNumber(d[k]), ...h }; };
+  const frames = (app.base && app.base.frames) || {};
+  const out = [];
+  const regionPoint = () => {
+    const sk = app.doc.features.find((f) => f.id === d.sketch);
+    const fr = frames[d.sketch];
+    if (!sk || !fr || !d.regions || !d.regions.length) return null;
+    const r = matchRegion(regionsOf(sk), d.regions[0]);
+    return r ? { p: to3(fr.frame, r.sample), frame: fr.frame, sk } : null;
+  };
+  if (d.type === 'extrude') {
+    const rp = regionPoint();
+    if (rp) {
+      const dir = d.flip ? rp.frame.n.map((x) => -x) : rp.frame.n;
+      out.push(mk('dist', { kind: 'linear', origin: rp.p, dir, scale: d.mode === 'sym' ? 0.5 : 1 }));
+      if (d.mode === 'two') out.push(mk('dist2', { kind: 'linear', origin: rp.p, dir: dir.map((x) => -x) }));
+    }
+  } else if (d.type === 'revolve') {
+    const rp = regionPoint();
+    if (rp) {
+      let o = [0, 0, 0], ax = AXIS_DIR[(d.axis && d.axis.world) || 'Z'];
+      if (d.axis && d.axis.line) {
+        const g = rp.sk.geo.find((x) => x.id === d.axis.line);
+        const P = (id) => { const q = rp.sk.geo.find((x) => x.id === id); return [q.x, q.y]; };
+        if (g) { const a = to3(rp.frame, P(g.p1_id)), b = to3(rp.frame, P(g.p2_id)); o = a; ax = vnorm([b[0] - a[0], b[1] - a[1], b[2] - a[2]]); }
+      }
+      if (d.flip) ax = ax.map((x) => -x);
+      const w = [rp.p[0] - o[0], rp.p[1] - o[1], rp.p[2] - o[2]];
+      const t = dot(w, ax);
+      const center = vadd(o, ax, t);
+      const rv = [rp.p[0] - center[0], rp.p[1] - center[1], rp.p[2] - center[2]];
+      const radius = Math.hypot(...rv);
+      if (radius > 1e-6) out.push(mk('angle', { kind: 'arc', center, axis: ax, ref: vnorm(rv), radius }));
+    }
+  } else if (d.type === 'hole' && !d.through) {
+    let p = null, n = null;
+    if (d.place && d.place.face && d.place.pts.length) { p = d.place.pts[0]; n = d.place.face.n; }
+    else if (d.sketch && frames[d.sketch]) {
+      const sk = app.doc.features.find((f) => f.id === d.sketch);
+      const pt = sk && sk.geo.find((g) => g.type === 'point' && !g.ref && !g.construction);
+      if (pt) { p = to3(frames[d.sketch].frame, [pt.x, pt.y]); n = frames[d.sketch].frame.n; }
+    }
+    if (p) out.push(mk('depth', { kind: 'linear', origin: p, dir: d.flip ? n : n.map((x) => -x), min: 0.1 }));
+  } else if ((d.type === 'fillet' || d.type === 'chamfer') && d.edges.length) {
+    const ref = d.edges[0];
+    const e = vp.pickBodies.get(ref.body);
+    const i = nearestEdgeIndex(ref);
+    if (e && i >= 0) {
+      const info = e.data.edgeInfo[i];
+      const ns = info.f.map((x) => x.n).filter(Boolean);
+      if (ns.length) {
+        const dir = vnorm(ns.reduce((s, n) => vadd(s, n), [0, 0, 0]));
+        out.push(mk(d.type === 'fillet' ? 'r' : 'd', { kind: 'linear', origin: info.m, dir, min: 0.05 }));
+      }
+    }
+  } else if (d.type === 'shell' && d.faces.length) {
+    const f = d.faces[0];
+    if (f.n) out.push(mk('t', { kind: 'linear', origin: f.p, dir: d.outside ? f.n : f.n.map((x) => -x), min: 0.1 }));
+  } else if (d.type === 'move' && d.bodies.length) {
+    const bb = vp.boundsOf(d.bodies);
+    if (bb) {
+      const c = bb.center;
+      const off = Math.max(5, bb.size * 0.35);
+      const dx = val('dx') || 0, dy = val('dy') || 0, dz = val('dz') || 0;
+      const cols = { dx: 0xd64545, dy: 0x2f9e57, dz: 0x2f6fe0 };
+      out.push(mk('dx', { kind: 'linear', origin: [c[0], c[1] + dy, c[2] + dz], dir: [1, 0, 0], offset: off, color: cols.dx }));
+      out.push(mk('dy', { kind: 'linear', origin: [c[0] + dx, c[1], c[2] + dz], dir: [0, 1, 0], offset: off, color: cols.dy }));
+      out.push(mk('dz', { kind: 'linear', origin: [c[0] + dx, c[1] + dy, c[2]], dir: [0, 0, 1], offset: off, color: cols.dz }));
+    }
+  }
+  return out.filter(Boolean);
+}
+vp.onHandle = (id, v) => {
+  const d = app.cmd && app.cmd.draft;
+  if (!d) return;
+  d[id] = fmt(v, 3);
+  renderPanel();
+  schedulePreview();
+};
+vp.onHandleLocked = () => toast('Questo valore viene da un parametro: cambialo nel pannello', 'warn');
 
 function nearestEdgeIndex(ref) {
   const e = vp.pickBodies.get(ref.body);
@@ -321,7 +416,7 @@ vp.onTap((x, y, ptype) => {
   }
   if (app.mode === 'model') {
     const h = vp.pick(x, y, { region: true, edge: true, face: true }, tol);
-    if (h && h.kind === 'region') { regionMenu(h, x, y); return; }
+    if (h && h.kind === 'region') { toggleRegionSel(h); return; }
     app.selBody = null;
     if (!h) { clearModelSel(); return; }
     toggleModelSel(h);
@@ -329,7 +424,22 @@ vp.onTap((x, y, ptype) => {
 });
 
 // ---------- selezione nel modello (prima si seleziona, poi si sceglie il comando) ----------
-app.msel = { edges: [], faces: [] };
+const emptySel = () => ({ edges: [], faces: [], regions: [], sketch: null });
+app.msel = emptySel();
+function toggleRegionSel(h) {
+  const sel = app.msel;
+  // le forme vanno estruse da un solo schizzo: cambiando schizzo si riparte
+  if (sel.sketch !== h.sketch || sel.edges.length || sel.faces.length) { app.msel = emptySel(); app.msel.sketch = h.sketch; }
+  const sk = app.doc.features.find((f) => f.id === h.sketch);
+  const rs = regionsOf(sk);
+  const r = rs[h.region];
+  const list = app.msel.regions;
+  const i = list.findIndex((x) => matchRegion(rs, x) === r);
+  if (i >= 0) list.splice(i, 1); else list.push({ key: r.key, seed: r.sample });
+  if (!list.length) app.msel.sketch = null;
+  render3D();
+  renderSelbar();
+}
 function edgeRefOf(h) {
   const D = vp.pickBodies.get(h.body).data, info = D.edgeInfo[h.i];
   return { body: h.body, i: h.i, p: info.m, d: info.d, t: info.t, f: info.f.map((x) => ({ n: x.n, t: D.faceInfo[x.i].t })) };
@@ -339,6 +449,7 @@ function faceRefOf(h) {
   return { body: h.body, i: h.i, p: h.point, n: info.t === 'PLANE' ? info.n : h.normal, t: info.t };
 }
 function toggleModelSel(h) {
+  if (app.msel.regions.length) app.msel = emptySel();
   const list = h.kind === 'edge' ? app.msel.edges : app.msel.faces;
   const i = list.findIndex((r) => r.body === h.body && r.i === h.i);
   if (i >= 0) list.splice(i, 1); else list.push(h.kind === 'edge' ? edgeRefOf(h) : faceRefOf(h));
@@ -346,14 +457,15 @@ function toggleModelSel(h) {
   renderSelbar();
 }
 function clearModelSel() {
-  app.msel = { edges: [], faces: [] };
+  app.msel = emptySel();
   render3D();
   renderSelbar();
 }
 function selBodies() { return [...new Set([...app.msel.edges, ...app.msel.faces].map((r) => r.body))]; }
 /** Valori iniziali di un comando presi dalla selezione fatta nel modello. */
 function presetFromSelection(type) {
-  const { edges, faces } = app.msel;
+  const { edges, faces, regions } = app.msel;
+  if (regions.length && (type === 'extrude' || type === 'revolve')) return { sketch: app.msel.sketch, regions: regions.map((r) => ({ ...r })) };
   if (!edges.length && !faces.length) return null;
   const strip = (r) => ({ ...r });
   if ((type === 'fillet' || type === 'chamfer') && edges.length) return { edges: edges.map(strip) };
@@ -365,9 +477,19 @@ function presetFromSelection(type) {
 }
 function renderSelbar() {
   const bar = $('#selbar');
-  const { edges, faces } = app.msel;
-  if (app.mode !== 'model' || (!edges.length && !faces.length)) { bar.hidden = true; return; }
+  const { edges, faces, regions } = app.msel;
+  if (app.mode !== 'model' || (!edges.length && !faces.length && !regions.length)) { bar.hidden = true; return; }
   hideQuick();
+  if (regions.length) {
+    const sk = app.doc.features.find((f) => f.id === app.msel.sketch);
+    bar.hidden = false;
+    bar.innerHTML = `<span><b>${regions.length} ${regions.length === 1 ? 'forma' : 'forme'}</b> di «${esc(sk ? sk.name : '')}»</span>
+      <button class="btn primary" data-scmd="extrude">${icon('extrude', 18)} Estrudi</button>
+      <button class="btn" data-scmd="revolve">${icon('revolve', 18)} Rivoluzione</button>
+      <button class="btn" data-sedit>${icon('sketch', 18)} Modifica schizzo</button>
+      <button class="icon" data-sclear aria-label="Deseleziona">${icon('close', 18)}</button>`;
+    return;
+  }
   const parts = [];
   if (edges.length) parts.push(`${edges.length} ${edges.length === 1 ? 'spigolo' : 'spigoli'}`);
   if (faces.length) parts.push(`${faces.length} ${faces.length === 1 ? 'faccia' : 'facce'}`);
@@ -383,6 +505,7 @@ $('#selbar').addEventListener('click', (e) => {
   const t = e.target.closest('button');
   if (!t) return;
   if (t.dataset.sclear !== undefined) clearModelSel();
+  else if (t.dataset.sedit !== undefined) { const sk = app.doc.features.find((f) => f.id === app.msel.sketch); clearModelSel(); if (sk) editSketch(sk); }
   else if (t.dataset.scmd) openCommand(t.dataset.scmd);
 });
 /** Tocco su una forma chiusa di uno schizzo: comandi rapidi. */
@@ -491,7 +614,7 @@ function openCommand(type, existing = null, preset = null) {
   const ctx = commandCtx(index);
   const pre = preset || (existing ? null : presetFromSelection(type));
   const draft = existing ? clone(existing) : { id: fid(), ...spec.init(ctx), ...(pre || {}) };
-  app.msel = { edges: [], faces: [] };
+  app.msel = emptySel();
   $('#selbar').hidden = true;
   app.cmd = { type, spec, draft, index, editing: !!existing, ctx, active: null };
   app.mode = 'command';
@@ -1445,7 +1568,8 @@ const HELP = {
     ]],
     ['Creare', [
       ['sketch', 'Schizzo: tocca un piano (o una faccia piana) e disegna. Si chiude con «Fine schizzo».'],
-      ['extrude', 'Estrudi: tocca dentro una forma chiusa azzurra e scegli lo spessore. «Taglia» la scava dentro un corpo.'],
+      ['extrude', 'Estrudi: tocca le forme azzurre (diventano blu, poi scegli Estrudi dalla barra in basso) e regola lo spessore. «Taglia» la scava dentro un corpo.'],
+      ['move', 'Frecce di controllo: in Estrudi, Foro, Raccordo, Smusso, Guscio, Rivoluzione (arco) e Sposta (X/Y/Z) trascina la freccia blu per cambiare la misura; il passo si adatta allo zoom. Grigia = misura legata a un parametro, si cambia nel pannello.'],
       ['revolve', 'Rivoluzione: fa ruotare una forma attorno a un asse (X, Y, Z o una linea dello schizzo), come al tornio.'],
       ['hole', 'Foro: tocca una faccia piana dove forare, anche più punti. Diametro, profondità o passante, lamatura.'],
       ['svg', 'Importa: STL e STEP diventano corpi; un SVG diventa uno schizzo (scegli piano e larghezza), pronto da estrudere.'],
@@ -1527,7 +1651,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (k === 'escape') {
-    if (app.mode === 'model' && (app.msel.edges.length || app.msel.faces.length)) { clearModelSel(); return; }
+    if (app.mode === 'model' && (app.msel.edges.length || app.msel.faces.length || app.msel.regions.length)) { clearModelSel(); return; }
     if (app.mode === 'command') cancelCommand();
     else if (app.mode === 'pickPlane') { app.mode = 'model'; renderAll(); render3D(); }
     return;
