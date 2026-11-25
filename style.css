@@ -156,11 +156,13 @@ body[data-mode="sketch"] #viewbar { display: none; }
 #browser.open ~ #viewbar { left: 300px; }
 
 #sketchStatus {
-  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 6;
+  position: absolute; left: 0; right: 0; margin-inline: auto; width: max-content; bottom: 12px; z-index: 6;
   display: flex; align-items: center; gap: 12px; max-width: calc(100% - 40px);
   background: var(--card); border-radius: 12px; padding: 8px 14px; box-shadow: var(--shadow); font-size: 13.5px;
 }
 #sketchStatus .dof { font-weight: 600; white-space: nowrap; }
+#sketchStatus .dof:empty { display: none; }
+#sketchStatus .hint { white-space: normal !important; }
 #sketchStatus .dof.ok { color: var(--ok); }
 #sketchStatus .dof.bad { color: var(--bad); }
 #sketchStatus .hint { color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -235,10 +237,11 @@ body[data-mode="sketch"] #timeline, body[data-mode="command"] #timeline { pointe
 .proj .danger { color: var(--bad); background: #fdecec; }
 .empty { color: var(--ink2); }
 
-#toasts { position: fixed; left: 50%; bottom: calc(84px + var(--safe-b)); transform: translateX(-50%); z-index: 60; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+#toasts { position: fixed; left: 50%; top: calc(132px + var(--safe-t)); transform: translateX(-50%); z-index: 60; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
 .toast { background: var(--ink); color: #fff; padding: 11px 16px; border-radius: 12px; font-size: 14.5px; box-shadow: var(--shadow); max-width: min(560px, 90vw); transition: opacity .4s, transform .4s; }
 .toast.warn { background: #7c2d12; }
-.toast.out { opacity: 0; transform: translateY(8px); }
+.toast.ok { background: var(--ok); }
+.toast.out { opacity: 0; transform: translateY(-8px); }
 
 #loading { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: grid; place-content: center; justify-items: center; gap: 18px; text-align: center; padding: 30px; }
 #loading p { max-width: 420px; color: var(--ink2); font-size: 15px; line-height: 1.45; margin: 0; }
@@ -283,6 +286,62 @@ path.sk-pt { fill: none; }
 .sk-snap.pt { fill: rgba(255, 138, 31, .22); }
 .sk-hint { font-size: 12.5px; font-weight: 600; fill: #1d2733; paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round; }
 .sk-hint.hv { fill: var(--sel); }
+
+/* ---------- gruppi della barra, guida, barre contestuali ---------- */
+#toolbar .grp {
+  flex: none; align-self: stretch; display: flex; align-items: center; justify-content: center;
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  font-size: 9.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8b97a4;
+  padding: 0 3px; margin: 4px 2px 4px 8px; border-right: 1px solid var(--line);
+}
+#toolbar .grp:first-child { margin-left: 0; }
+button.icon.help { font-size: 19px; font-weight: 700; color: var(--accent); }
+
+#sketchInput {
+  position: absolute; left: 0; right: 0; margin-inline: auto; width: max-content; bottom: 64px; z-index: 7;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100% - 24px); background: var(--card); border-radius: 14px; padding: 8px 10px 8px 14px; box-shadow: var(--shadow);
+}
+#sketchInput .lbl { font-size: 12px; font-weight: 700; color: var(--ink2); text-transform: uppercase; letter-spacing: .05em; display: flex; align-items: center; gap: 6px; }
+#sketchInput .info { font-size: 14px; color: var(--ink2); }
+#sketchInput .xf { display: flex; align-items: center; gap: 6px; height: 44px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: #fff; }
+#sketchInput .xf span { font-size: 13px; color: var(--ink2); }
+#sketchInput .xf input { width: 78px; border: 0; outline: 0; font-size: 17px; text-align: right; font-variant-numeric: tabular-nums; background: transparent; }
+#sketchInput .xf em { font-style: normal; font-size: 13px; color: var(--ink2); }
+#sketchInput .xf:focus-within { border-color: var(--accent); }
+
+#quickbar {
+  position: absolute; left: 0; right: 0; margin-inline: auto; width: max-content; bottom: 64px; z-index: 8;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100% - 24px); background: var(--card); border-radius: 14px; padding: 8px 8px 8px 16px; box-shadow: var(--shadow);
+  font-size: 14.5px; animation: pop .25s ease;
+}
+#quickbar.warn { background: #fff7ed; color: #7c2d12; }
+#quickbar > span { display: flex; align-items: center; gap: 8px; }
+@keyframes pop { from { opacity: 0; transform: translateY(10px); } }
+
+#welcome {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5;
+  width: min(460px, calc(100% - 32px)); background: rgba(255, 255, 255, .96); border-radius: 18px; box-shadow: var(--shadow); padding: 20px 22px;
+}
+#welcome h2 { margin: 0 0 12px; font-size: 19px; }
+#welcome ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+#welcome li { display: flex; gap: 12px; align-items: flex-start; }
+#welcome li .ic { color: var(--accent); margin-top: 2px; }
+#welcome li b { display: block; font-size: 15px; }
+#welcome li span { font-size: 14px; color: var(--ink2); line-height: 1.35; }
+#welcome .w-act { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+.sheet h3.hs { margin: 18px 0 2px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); }
+.sheet h4 { margin: 12px 0 4px; font-size: 15px; }
+ul.help { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+ul.help li { display: flex; gap: 12px; align-items: flex-start; font-size: 14.5px; line-height: 1.4; }
+ul.help li .ic { color: var(--accent); flex: none; margin-top: 1px; }
+.menu button.title { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink2); min-height: 32px; opacity: 1; }
+
+.sk-pt.cpt { stroke: #b0855a; fill: #fff; stroke-dasharray: 2 2; }
+.sk-angle { stroke: var(--sel); stroke-width: 1.6; fill: none; }
+.sk-curve.maxis { stroke: #7c3aed; stroke-width: 3.2; stroke-dasharray: 10 5; }
 
 /* ---------- schermi stretti (iPad in verticale, telefono) ---------- */
 @media (max-width: 900px) {

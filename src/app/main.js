@@ -6,7 +6,7 @@ import { Cad } from './cad.js';
 import { COMMANDS, TYPE_NAMES, TYPE_ICONS, readyToCommit } from './commands.js';
 import { icon } from './icons.js';
 import * as store from './store.js';
-import { findRegions, matchRegion } from '../shared/profiles.js';
+import { findRegions, matchRegion, pointInPoly } from '../shared/profiles.js';
 import { evalParams, evaluate, fmt, isValidName } from '../shared/expr.js';
 import { STD_FRAMES, frameFromNormal, to2, to3, dot } from '../shared/frames.js';
 
@@ -195,6 +195,11 @@ function sketchPolylines(geo) {
   return out;
 }
 
+/** Regioni "esterne": non stanno dentro il foro di un'altra (così un anello non si riempie). */
+function outerRegions(rs) {
+  return rs.filter((r) => !rs.some((o) => o !== r && o.holePolys.some((h) => pointInPoly(r.sample, h))));
+}
+
 const regionCache = new Map();
 function regionsOf(sketch) {
   const k = sketch.id + ':' + JSON.stringify(sketch.geo);
@@ -228,6 +233,10 @@ function render3D() {
       const rs = regionsOf(f);
       ov.regions = cmd.draft.regions.map((r) => matchRegion(rs, r)).filter(Boolean);
       ov.selected = ov.regions.map((_, i) => i);
+    } else if (!cmd && app.mode === 'model') {
+      // forme chiuse in azzurro chiaro: si toccano per estruderle
+      ov.regions = regionsOf(f);
+      ov.selected = [];
     }
     if (field && field.pick === 'sketchLine' && isCurrent) {
       // anche gli assi dello schizzo valgono come asse di rivoluzione
@@ -306,7 +315,8 @@ vp.onTap((x, y, ptype) => {
     return;
   }
   if (app.mode === 'model') {
-    const h = vp.pick(x, y, { body: true }, tol);
+    const h = vp.pick(x, y, { region: true, body: true }, tol);
+    if (h && h.kind === 'region') { regionMenu(h, x, y); return; }
     app.selBody = h ? h.body : null;
     render3D();
     if (h) {
@@ -315,6 +325,22 @@ vp.onTap((x, y, ptype) => {
     } else setHint('');
   }
 });
+/** Tocco su una forma chiusa di uno schizzo: comandi rapidi. */
+function regionMenu(h, x, y) {
+  const sk = app.doc.features.find((f) => f.id === h.sketch);
+  const rs = regionsOf(sk);
+  const r = rs[h.region];
+  // se la forma toccata ne contiene altre (es. un foro), si estrude con i suoi fori
+  const preset = { sketch: sk.id, regions: [{ key: r.key, seed: r.sample }] };
+  const anchor = { getBoundingClientRect: () => { const c = vp.canvas.getBoundingClientRect(); return new DOMRect(c.left + x, c.top + y, 0, 0); } };
+  popMenu(anchor, [
+    { label: `Forma di «${sk.name}»`, cls: 'title', disabled: true },
+    { label: 'Estrudi questa forma', icon: 'extrude', act: () => openCommand('extrude', null, preset) },
+    { label: 'Rivoluzione', icon: 'revolve', act: () => openCommand('revolve', null, preset) },
+    { label: 'Modifica lo schizzo', icon: 'sketch', act: () => editSketch(sk) },
+  ]);
+}
+
 vp.hoverHandler = (x, y) => {
   if (app.mode !== 'command') { if (vp.preselect) vp.setPreselect(null); return; }
   const fld = activePickField();
@@ -384,23 +410,25 @@ function commandCtx(index) {
   let autoRegions = null;
   const lastSk = [...before].reverse().find((f) => f.type === 'sketch');
   if (lastSk && !app.doc.features.some((f) => f.sketch === lastSk.id)) {
-    const rs = regionsOf(lastSk);
-    if (rs.length === 1) autoRegions = { sketch: lastSk.id, regions: [{ key: rs[0].key, seed: rs[0].sample }] };
+    const outer = outerRegions(regionsOf(lastSk));
+    if (outer.length) autoRegions = { sketch: lastSk.id, regions: outer.map((r) => ({ key: r.key, seed: r.sample })) };
   }
   return { hasBodies: bodies.length > 0, lastBody: bodies.length ? bodies[bodies.length - 1].id : null, toolFeatures, autoRegions };
 }
 
-function openCommand(type, existing = null) {
+function openCommand(type, existing = null, preset = null) {
   if (app.mode === 'sketch') return;
   if (app.mode === 'command') cancelCommand();
+  hideQuick();
   const spec = COMMANDS[type];
   const index = existing ? app.doc.features.findIndex((f) => f.id === existing.id) : insertIndex();
   const ctx = commandCtx(index);
-  const draft = existing ? clone(existing) : { id: fid(), ...spec.init(ctx) };
+  const draft = existing ? clone(existing) : { id: fid(), ...spec.init(ctx), ...(preset || {}) };
   app.cmd = { type, spec, draft, index, editing: !!existing, ctx, active: null };
   app.mode = 'command';
-  const firstPick = visibleFields().find((f) => f.kind === 'pick');
-  app.cmd.active = firstPick ? firstPick.k : null;
+  const picks = visibleFields().filter((f) => f.kind === 'pick');
+  const empty = picks.find((f) => !((f.get ? f.get(draft) : draft[f.k]) || []).length && !f.optional);
+  app.cmd.active = (empty || picks[0] || {}).k || null;
   app.selBody = null;
   renderAll();
   refresh();
@@ -444,10 +472,11 @@ function okCommand() {
 // ---------- schizzi ----------
 function beginSketchCommand() {
   if (app.mode === 'command') cancelCommand();
+  hideQuick();
   app.mode = 'pickPlane';
   renderAll();
   render3D();
-  setHint('Tocca un piano di origine o una faccia piana');
+  setHint('Dove disegni? Tocca un piano colorato (blu = pianta XY, verde = fronte XZ, rosso = lato YZ) o una faccia piana di un corpo');
 }
 function startSketch(plane) {
   const n = app.doc.features.filter((f) => f.type === 'sketch').length + 1;
@@ -456,6 +485,7 @@ function startSketch(plane) {
   enterSketch(f, frame, insertIndex(), true);
 }
 async function editSketch(f) {
+  hideQuick();
   const index = app.doc.features.findIndex((x) => x.id === f.id);
   setBusy(true);
   let r;
@@ -491,34 +521,69 @@ function finishSketch(keep = true) {
   }
   renderAll();
   refresh();
+  if (keep && !app.doc.features.some((f) => f.sketch === sk.id)) showQuick(sk);
 }
+
+// ---------- azioni rapide dopo uno schizzo ----------
+function showQuick(sk) {
+  const bar = $('#quickbar');
+  const outer = outerRegions(regionsOf(sk));
+  const hasCurves = sk.geo.some((g) => !g.ref && g.type !== 'point');
+  if (!hasCurves) { hideQuick(); return; }
+  bar.hidden = false;
+  if (!outer.length) {
+    bar.className = 'warn';
+    bar.innerHTML = `<span>${icon('info', 18)} «${esc(sk.name)}» non ha forme chiuse: per estrudere il contorno deve chiudersi (l'ultima linea deve finire sul primo punto).</span>
+      <button class="btn" data-qedit>Modifica schizzo</button><button class="icon" data-qclose aria-label="Chiudi">${icon('close', 18)}</button>`;
+  } else {
+    bar.className = '';
+    bar.innerHTML = `<span><b>${esc(sk.name)}</b> · ${outer.length === 1 ? '1 forma chiusa' : `${outer.length} forme chiuse`}. Cosa vuoi farne?</span>
+      <button class="btn primary" data-qcmd="extrude">${icon('extrude', 18)} Estrudi</button><button class="btn" data-qcmd="revolve">${icon('revolve', 18)} Rivoluzione</button>
+      <button class="icon" data-qclose aria-label="Chiudi">${icon('close', 18)}</button>`;
+  }
+  bar.onclick = (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+    if (t.dataset.qcmd) openCommand(t.dataset.qcmd, null, { sketch: sk.id, regions: outer.map((r) => ({ key: r.key, seed: r.sample })) });
+    else if (t.dataset.qedit !== undefined) { hideQuick(); editSketch(app.doc.features.find((f) => f.id === sk.id)); }
+    hideQuick();
+  };
+}
+function hideQuick() { $('#quickbar').hidden = true; }
 
 // ---------- interfaccia: barra superiore ----------
 const MODEL_TOOLS = [
+  { group: 'Crea' },
   ['sketch', 'Schizzo', () => beginSketchCommand()],
   ['extrude', 'Estrudi', () => openCommand('extrude')],
   ['revolve', 'Rivoluzione', () => openCommand('revolve')],
   ['hole', 'Foro', () => openCommand('hole')],
-  '|',
+  { group: 'Modifica' },
   ['fillet', 'Raccordo', () => openCommand('fillet')],
   ['chamfer', 'Smusso', () => openCommand('chamfer')],
   ['shell', 'Guscio', () => openCommand('shell')],
-  '|',
-  ['pattern', 'Serie', () => openCommand('pattern')],
-  ['mirror', 'Specchio', () => openCommand('mirror')],
   ['combine', 'Combina', () => openCommand('combine')],
   ['move', 'Sposta', () => openCommand('move')],
-  '|',
+  { group: 'Ripeti' },
+  ['pattern', 'Serie', () => openCommand('pattern')],
+  ['mirror', 'Specchio', () => openCommand('mirror')],
+  { group: 'Inserisci' },
   ['import', 'Importa', () => importModel()],
 ];
+// [icona, etichetta, tipo, nome strumento se diverso dall'icona]
 const SKETCH_TOOLS = [
+  { group: 'Disegna' },
   ['select', 'Seleziona', 'tool'], ['line', 'Linea', 'tool'], ['rect', 'Rettangolo', 'tool'], ['circle', 'Cerchio', 'tool'],
-  ['arc', 'Arco', 'tool'], ['point', 'Punto', 'tool'], ['dim', 'Quota', 'tool'], '|',
+  ['arc', 'Arco', 'tool'], ['point', 'Punto', 'tool'],
+  { group: 'Misura' },
+  ['dim', 'Quota', 'tool'],
+  { group: 'Modifica' },
+  ['fillet', 'Raccordo', 'tool', 'sfillet'], ['mirror', 'Specchia', 'tool', 'smirror'], ['construction', 'Costruzione', 'act'], ['trash', 'Elimina', 'act'],
+  { group: 'Vincoli' },
   ['coincident', 'Coincidente', 'cons'], ['horizontal', 'Orizzontale', 'cons'], ['vertical', 'Verticale', 'cons'],
   ['parallel', 'Parallela', 'cons'], ['perpendicular', 'Perpendic.', 'cons'], ['tangent', 'Tangente', 'cons'],
   ['equal', 'Uguale', 'cons'], ['midpoint', 'Punto medio', 'cons'], ['concentric', 'Concentrico', 'cons'],
-  ['symmetric', 'Simmetria', 'cons'], ['fix', 'Fissa', 'cons'], '|',
-  ['construction', 'Costruzione', 'act'], ['trash', 'Elimina', 'act'],
+  ['symmetric', 'Simmetria', 'cons'], ['fix', 'Fissa', 'cons'],
 ];
 
 function renderTopbar() {
@@ -531,9 +596,9 @@ function renderTopbar() {
   $('#sketchFinish').hidden = !sk;
   const tools = sk ? SKETCH_TOOLS : MODEL_TOOLS;
   tb.innerHTML = tools.map((t, i) => {
-    if (t === '|') return '<span class="sep"></span>';
-    const [ic, label, kind] = t;
-    const on = sk ? kind === 'tool' && sketcher.tool === ic : (app.mode === 'command' && app.cmd.type === ic) || (ic === 'sketch' && app.mode === 'pickPlane');
+    if (t.group) return `<span class="grp">${t.group}</span>`;
+    const [ic, label, kind, name] = t;
+    const on = sk ? (kind === 'tool' && sketcher.tool === (name || ic)) || (kind === 'cons' && sketcher.tool === 'c:' + ic) : (app.mode === 'command' && app.cmd.type === ic) || (ic === 'sketch' && app.mode === 'pickPlane');
     return `<button class="tool ${on ? 'on' : ''}" data-i="${i}" title="${label}">${icon(ic)}<span>${label}</span></button>`;
   }).join('');
   tb.className = sk ? 'sketch' : '';
@@ -543,9 +608,10 @@ $('#toolbar').addEventListener('click', (e) => {
   if (!b) return;
   const t = (app.mode === 'sketch' ? SKETCH_TOOLS : MODEL_TOOLS)[+b.dataset.i];
   if (app.mode === 'sketch') {
-    const [name, , kind] = t;
-    if (kind === 'tool') sketcher.setTool(name);
-    else if (kind === 'cons') sketcher.applyConstraint(name);
+    const [name, , kind, toolName] = t;
+    if (kind === 'tool') sketcher.setTool(toolName || name);
+    // vincolo: se la selezione è già giusta si applica, altrimenti si entra nello strumento e si toccano gli elementi
+    else if (kind === 'cons') { if (sketcher.sel.size && sketcher.consReady(name)) sketcher.applyConstraint(name); else sketcher.setTool('c:' + name); }
     else if (name === 'construction') sketcher.toggleConstruction();
     else if (name === 'trash') sketcher.deleteSelection();
     renderTopbar();
@@ -558,19 +624,60 @@ $('#toolbar').addEventListener('click', (e) => {
 function renderSketchUi(st) {
   renderTopbar();
   const el = $('#sketchStatus');
-  if (app.mode !== 'sketch') { el.hidden = true; return; }
+  if (app.mode !== 'sketch') { el.hidden = true; $('#sketchInput').hidden = true; $('#sketchInput').dataset.kind = ''; return; }
   el.hidden = false;
   let txt, cls = '';
   if (st.conflicting && st.conflicting.length) { txt = 'Vincoli in conflitto'; cls = 'bad'; }
   else if (st.dof === 0) { txt = 'Completamente vincolato'; cls = 'ok'; }
-  else txt = st.dof == null ? '' : `Gradi di libertà: ${st.dof}`;
-  const hints = {
-    select: 'Tocca per selezionare · trascina i punti · un dito sul vuoto sposta la vista',
-    line: 'Tocca o trascina per disegnare · tocca un punto esistente per chiudere',
-    rect: 'Due angoli opposti', circle: 'Centro, poi raggio', arc: 'Inizio, fine, poi un punto sull\'arco',
-    point: 'Tocca per aggiungere punti (centri dei fori)', dim: 'Tocca un elemento (o due) e poi il punto dove mettere la quota',
-  };
-  el.innerHTML = `<span class="dof ${cls}">${txt}</span><span class="hint">${hints[st.tool] || ''}</span>`;
+  else txt = st.dof == null ? '' : `Liberi: ${st.dof}`;
+  el.innerHTML = `<span class="dof ${cls}" title="Gradi di libertà: quanti movimenti restano da bloccare con quote e vincoli">${txt}</span><span class="hint">${esc(st.hint || '')}</span>`;
+  renderSketchInput(st);
+}
+
+/** Barra sotto lo schizzo: valori esatti durante il disegno, oppure conferma dello specchio. */
+function renderSketchInput(st) {
+  const bar = $('#sketchInput');
+  if (st.mirror) {
+    bar.hidden = false;
+    bar.dataset.kind = 'mirror';
+    bar.innerHTML = `<span class="lbl">${icon('mirror', 18)} Specchia</span><span class="info">${st.mirror.axis ? 'Asse scelto' : 'Scegli l\'asse'} · ${st.mirror.n} elementi</span>
+      <button class="btn" data-mcancel>Annulla</button><button class="btn primary" data-mapply ${st.mirror.axis && st.mirror.n ? '' : 'disabled'}>Specchia</button>`;
+    return;
+  }
+  const ex = st.exact;
+  if (!ex) { bar.hidden = true; bar.dataset.kind = ''; return; }
+  bar.hidden = false;
+  if (bar.dataset.kind === ex.kind) {
+    // stessa forma: aggiorno solo i valori suggeriti, senza toccare quello che si sta scrivendo
+    for (const f of ex.fields) { const i = bar.querySelector(`input[data-k="${f.k}"]`); if (i) i.placeholder = f.ph; }
+    return;
+  }
+  bar.dataset.kind = ex.kind;
+  bar.innerHTML = `<span class="lbl">Misure esatte</span>${ex.fields.map((f) => `<label class="xf"><span>${esc(f.label)}</span><input data-k="${f.k}" placeholder="${esc(f.ph)}" inputmode="decimal" autocomplete="off" autocapitalize="off" spellcheck="false"><em>${esc(f.unit)}</em></label>`).join('')}
+    <button class="btn primary" data-xok>Inserisci</button>`;
+}
+$('#sketchInput').addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.dataset.mapply !== undefined) sketcher.mirrorApply();
+  else if (t.dataset.mcancel !== undefined) { sketcher.cancel(); sketcher.setTool('select'); }
+  else if (t.dataset.xok !== undefined) submitExact();
+});
+$('#sketchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitExact(); } });
+function submitExact() {
+  const bar = $('#sketchInput');
+  const vals = {};
+  for (const i of bar.querySelectorAll('input')) vals[i.dataset.k] = i.value;
+  if (!Object.values(vals).some((v) => v.trim())) { toast('Scrivi almeno un valore (vuoto = valore del disegno)', 'warn'); return; }
+  const scope = evalParams(app.doc.params).scope;
+  try {
+    for (const v of Object.values(vals)) if (v.trim()) evaluate(v, scope);
+  } catch (err) { toast(err.message, 'warn'); return; }
+  bar.dataset.kind = '';
+  if (sketcher.placeExact(vals, (x) => evaluate(x, scope))) {
+    // se la catena di linee continua, il cursore torna sul primo campo
+    setTimeout(() => { const i = $('#sketchInput input'); if (i) i.focus(); }, 30);
+  }
 }
 
 // ---------- pannello comando ----------
@@ -623,6 +730,8 @@ function renderPanel() {
     <div class="fields">${rows}</div>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <footer><button class="btn" data-act="cancel">Annulla</button><button class="btn primary" data-act="ok" ${readyToCommit(d) && !err ? '' : 'disabled'}>OK</button></footer>`;
+  const af = activePickField();
+  setHint(af ? (af.hint || 'Tocca nella vista') : '');
 }
 
 const panel = $('#panel');
@@ -698,6 +807,7 @@ function renderTimeline() {
   el.innerHTML = `<div class="tl-track">${items || '<span class="tl-empty">La cronologia è vuota: inizia con uno schizzo</span>'}${rb == null && items ? '<span class="tl-marker" title="Fine cronologia"></span>' : ''}${end}</div>`;
   const on = el.querySelector('.tl-item.on');
   if (on) on.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  renderWelcome();
 }
 $('#timeline').addEventListener('click', (e) => {
   if (app.mode !== 'model') return;
@@ -1081,10 +1191,85 @@ function renderAll() {
   renderBrowser();
   document.body.dataset.mode = app.mode;
   $('#sketchStatus').hidden = app.mode !== 'sketch';
-  if (app.mode !== 'pickPlane') setHint('');
+  if (app.mode !== 'model') hideQuick();
+  if (app.mode === 'model' || app.mode === 'sketch') setHint('');
+  renderWelcome();
+}
+
+// ---------- benvenuto e guida ----------
+function renderWelcome() {
+  const el = $('#welcome');
+  const show = app.mode === 'model' && app.doc && app.doc.features.length === 0;
+  el.hidden = !show;
+  if (!show || el.dataset.ready) return;
+  el.dataset.ready = '1';
+  el.innerHTML = `<h2>Come si crea un pezzo</h2>
+    <ol>
+      <li>${icon('sketch')}<div><b>Schizzo</b><span>Scegli un piano e disegna una forma chiusa: linee, rettangoli, cerchi. Dai le misure con <i>Quota</i>.</span></div></li>
+      <li>${icon('extrude')}<div><b>Estrudi</b><span>Tocca la forma azzurra e scegli lo spessore: diventa un solido.</span></div></li>
+      <li>${icon('fillet')}<div><b>Rifinisci</b><span>Raccordi, fori, gusci… ogni passo resta nella cronologia in basso e si può modificare.</span></div></li>
+      <li>${icon('export')}<div><b>Esporta</b><span>3MF per Bambu Studio, STL o STEP.</span></div></li>
+    </ol>
+    <div class="w-act"><button class="btn primary" data-wstart>${icon('sketch', 18)} Inizia uno schizzo</button><button class="btn" data-whelp>Guida completa</button></div>`;
+  el.onclick = (e) => {
+    if (e.target.closest('[data-wstart]')) beginSketchCommand();
+    else if (e.target.closest('[data-whelp]')) openHelp();
+  };
+}
+
+const HELP = {
+  model: [
+    ['Muoversi', [
+      ['view', 'Un dito ruota, due dita spostano e ingrandiscono. In basso a sinistra: viste Alto, Fronte, Destra e Adatta.'],
+      ['tree', 'Il pannello Corpi elenca corpi, schizzi e parametri: con l\'occhio li mostri o nascondi.'],
+    ]],
+    ['Creare', [
+      ['sketch', 'Schizzo: tocca un piano (o una faccia piana) e disegna. Si chiude con «Fine schizzo».'],
+      ['extrude', 'Estrudi: tocca dentro una forma chiusa azzurra e scegli lo spessore. «Taglia» la scava dentro un corpo.'],
+      ['revolve', 'Rivoluzione: fa ruotare una forma attorno a un asse (X, Y, Z o una linea dello schizzo), come al tornio.'],
+      ['hole', 'Foro: tocca una faccia piana dove forare, anche più punti. Diametro, profondità o passante, lamatura.'],
+    ]],
+    ['Modificare', [
+      ['fillet', 'Raccordo e Smusso: tocca gli spigoli da arrotondare o smussare.'],
+      ['shell', 'Guscio: tocca le facce da togliere, il pezzo si svuota con lo spessore scelto.'],
+      ['combine', 'Combina: unisce, sottrae o interseca corpi diversi.'],
+      ['pattern', 'Serie: ripete una feature o un corpo in fila o in cerchio. Specchio: lo copia simmetrico rispetto a un piano.'],
+    ]],
+    ['Cronologia e parametri', [
+      ['rollback', 'Ogni comando è un passo nella barra in basso: toccalo per modificarlo, sopprimerlo o eliminarlo.'],
+      ['params', 'fx Parametri: dai un nome alle misure (es. larghezza = 60) e usale ovunque, anche come larghezza/2.'],
+    ]],
+  ],
+  sketch: [
+    ['Disegnare', [
+      ['line', 'Linea: tocca un punto dopo l\'altro; la catena continua finché non torni al primo punto. Doppio tocco o Esc per fermarti.'],
+      ['rect', 'Rettangolo: due angoli opposti. Cerchio: centro e raggio. Arco: inizio, fine e un punto di passaggio.'],
+      ['point', 'Punto: punti liberi, ad esempio i centri dei fori.'],
+      ['dim', 'Misure esatte: mentre disegni compare in basso la barra per scrivere lunghezza e angolo, larghezza e altezza, diametro.'],
+    ]],
+    ['Quote', [
+      ['dim', 'Quota: tocca una linea (lunghezza), un cerchio (diametro), due punti (distanza) o due linee (angolo). Tocca una quota esistente per cambiarla; accetta parametri.'],
+    ]],
+    ['Modificare', [
+      ['select', 'Seleziona: trascina punti e linee; un dito sul vuoto sposta la vista.'],
+      ['fillet', 'Raccordo: tocca l\'angolo tra due linee e scrivi il raggio.'],
+      ['mirror', 'Specchia: tocca prima la linea di simmetria (anche un asse tratteggiato), poi gli elementi da copiare, poi «Specchia». La copia resta simmetrica anche se modifichi l\'originale.'],
+      ['construction', 'Costruzione: trasforma le linee selezionate in tratteggiate di riferimento (non formano profili, servono come aiuto o asse).'],
+    ]],
+    ['Vincoli', [
+      ['horizontal', 'Tocca il vincolo e poi gli elementi, uno dopo l\'altro: Orizzontale/Verticale (una linea), Parallela/Perpendicolare (due linee), Tangente, Uguale, Coincidente…'],
+      ['fix', 'In basso a sinistra «Liberi: N» dice quanti movimenti restano: a 0 lo schizzo è completamente definito e diventa nero.'],
+    ]],
+  ],
+};
+function openHelp(first = app.mode === 'sketch' ? 'sketch' : 'model') {
+  const sec = (key, title) => `<h3 class="hs">${title}</h3>` + HELP[key].map(([h, items]) => `<h4>${h}</h4><ul class="help">${items.map(([ic, t]) => `<li>${icon(ic)}<span>${esc(t)}</span></li>`).join('')}</ul>`).join('');
+  const parts = first === 'sketch' ? [sec('sketch', 'Nello schizzo'), sec('model', 'Nel modello 3D')] : [sec('model', 'Nel modello 3D'), sec('sketch', 'Nello schizzo')];
+  modal(`<h2>Guida rapida</h2>${parts.join('')}<footer><button class="btn primary" data-close>Ho capito</button></footer>`);
 }
 
 // ---------- pulsanti fissi ----------
+$('#btnHelp').onclick = () => openHelp();
 $('#btnProjects').onclick = openProjects;
 $('#btnTree').onclick = () => $('#browser').classList.toggle('open');
 $('#btnUndo').onclick = undo;

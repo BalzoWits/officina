@@ -10,6 +10,13 @@ gusci e fori, e si esporta in 3MF/STL per la stampa o in STEP per altri CAD.
   Vincoli: coincidente, orizzontale, verticale, parallela, perpendicolare, tangente, uguale, punto medio, concentrico,
   simmetria, fisso. Quote di lunghezza, distanza (allineata, orizzontale, verticale), diametro, raggio, angolo.
   Il solver è planegcs di FreeCAD: mostra i gradi di libertà e segnala i vincoli in conflitto.
+  Mentre disegni vedi lunghezza e angolo, e una barra in basso permette di scrivere le misure esatte
+  (lunghezza/angolo, larghezza/altezza, diametro), che diventano quote. I vincoli si usano come strumenti:
+  tocchi il vincolo e poi gli elementi. Nello schizzo ci sono anche **Specchia** (asse, elementi, conferma: la copia
+  resta simmetrica) e **Raccordo 2D** sugli angoli tra due linee.
+- **Guida**: scheda di benvenuto sul progetto vuoto, pulsante «?» sempre disponibile, suggerimenti passo per passo
+  nello schizzo e nei comandi; dopo uno schizzo compaiono le azioni rapide Estrudi/Rivoluzione, e toccando una forma
+  azzurra nel modello si apre il menu per estruderla.
 - **Profili automatici**: le curve si spezzano alle intersezioni e ogni regione chiusa (anche con fori) si tocca per estruderla.
 - **Feature 3D**: estrusione (un lato, simmetrica, due lati), rivoluzione (attorno a X/Y/Z o a una linea dello schizzo),
   foro (passante o cieco, con lamatura), raccordo, smusso, guscio, serie rettangolare e circolare, specchio,

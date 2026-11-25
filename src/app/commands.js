@@ -32,7 +32,7 @@ export const COMMANDS = {
     title: 'Estrudi',
     init: (ctx) => ({ type: 'extrude', sketch: ctx.autoRegions?.sketch || null, regions: ctx.autoRegions?.regions || [], dist: '10', mode: 'one', dist2: '10', flip: false, op: ctx.hasBodies ? 'join' : 'new', targets: [] }),
     fields: (f) => [
-      { k: 'regions', kind: 'pick', pick: 'region', multi: true, label: 'Profili', hint: 'Tocca i profili chiusi da estrudere' },
+      { k: 'regions', kind: 'pick', pick: 'region', multi: true, label: 'Profili', hint: 'Tocca dentro le forme azzurre per sceglierle (tocca di nuovo per toglierle)' },
       { k: 'dist', kind: 'num', label: f.mode === 'sym' ? 'Distanza totale' : 'Distanza', unit: 'mm' },
       { k: 'mode', kind: 'seg', label: 'Estensione', options: [['one', 'Un lato'], ['sym', 'Simmetrica'], ['two', 'Due lati']] },
       f.mode === 'two' && { k: 'dist2', kind: 'num', label: 'Distanza lato 2', unit: 'mm' },
@@ -45,7 +45,7 @@ export const COMMANDS = {
     title: 'Rivoluzione',
     init: (ctx) => ({ type: 'revolve', sketch: ctx.autoRegions?.sketch || null, regions: ctx.autoRegions?.regions || [], axis: { world: 'Z' }, angle: '360', flip: false, op: ctx.hasBodies ? 'join' : 'new', targets: [] }),
     fields: (f) => [
-      { k: 'regions', kind: 'pick', pick: 'region', multi: true, label: 'Profili', hint: 'Tocca i profili da far ruotare' },
+      { k: 'regions', kind: 'pick', pick: 'region', multi: true, label: 'Profili', hint: 'Tocca dentro le forme azzurre da far ruotare' },
       worldSeg('axis', 'Asse', false, [['line', 'Linea']]),
       f.axis && f.axis.line !== undefined && { k: 'axisLine', kind: 'pick', pick: 'sketchLine', label: 'Linea asse', hint: "Tocca una linea dello schizzo", get: (x) => (x.axis.line ? [x.axis.line] : []), set: (x, v) => { x.axis = { line: v[v.length - 1] || null }; } },
       { k: 'angle', kind: 'num', label: 'Angolo', unit: '°' },
