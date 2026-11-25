@@ -56,7 +56,7 @@ export function solve(sketch, scope = {}, drag = null) {
   for (const c of sketch.cons || []) {
     if (c.off) continue;
     const p = { ...c };
-    delete p.expr; delete p.lx; delete p.ly; delete p.sign; delete p.off;
+    delete p.expr; delete p.lx; delete p.ly; delete p.sign; delete p.off; delete p.grp; delete p.nolabel;
     const df = dimField(c);
     if (df && c.expr != null) {
       try {

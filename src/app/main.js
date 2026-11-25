@@ -1,6 +1,7 @@
 // Officina: CAD parametrico per iPad. Collega vista, schizzi, comandi e motore.
 import { Viewport, bodyColor } from './viewport.js';
-import { Sketcher, newSketchGeo } from './sketcher.js';
+import { Sketcher, newSketchGeo, SKETCH_CMDS } from './sketcher.js';
+import { readSvg, svgToSketch } from './svgimport.js';
 import { initSolver, solve } from './solver.js';
 import { Cad } from './cad.js';
 import { COMMANDS, TYPE_NAMES, TYPE_ICONS, readyToCommit } from './commands.js';
@@ -251,7 +252,11 @@ function render3D() {
   // evidenziazioni
   const sel = { faces: [], edges: [], bodies: [] };
   if (cmd) collectHighlights(cmd.draft, sel);
-  else if (app.selBody) sel.bodies.push(app.selBody);
+  else {
+    if (app.selBody) sel.bodies.push(app.selBody);
+    for (const r of app.msel.edges) { const i = nearestEdgeIndex(r); if (i >= 0) sel.edges.push({ body: r.body, i }); }
+    for (const r of app.msel.faces) { const i = nearestFaceIndex(r); if (i >= 0) sel.faces.push({ body: r.body, i }); }
+  }
   vp.setSelection(sel);
   vp.setPlanesVisible(app.mode === 'pickPlane' || !!(field && (field.pick === 'planarFace')) || !!app.doc.ui.showPlanes);
 }
@@ -315,15 +320,70 @@ vp.onTap((x, y, ptype) => {
     return;
   }
   if (app.mode === 'model') {
-    const h = vp.pick(x, y, { region: true, body: true }, tol);
+    const h = vp.pick(x, y, { region: true, edge: true, face: true }, tol);
     if (h && h.kind === 'region') { regionMenu(h, x, y); return; }
-    app.selBody = h ? h.body : null;
-    render3D();
-    if (h) {
-      const b = app.model.bodies.find((q) => q.id === h.body);
-      setHint(b ? (app.doc.ui.names[b.id] || b.name) : '');
-    } else setHint('');
+    app.selBody = null;
+    if (!h) { clearModelSel(); return; }
+    toggleModelSel(h);
   }
+});
+
+// ---------- selezione nel modello (prima si seleziona, poi si sceglie il comando) ----------
+app.msel = { edges: [], faces: [] };
+function edgeRefOf(h) {
+  const D = vp.pickBodies.get(h.body).data, info = D.edgeInfo[h.i];
+  return { body: h.body, i: h.i, p: info.m, d: info.d, t: info.t, f: info.f.map((x) => ({ n: x.n, t: D.faceInfo[x.i].t })) };
+}
+function faceRefOf(h) {
+  const info = vp.pickBodies.get(h.body).data.faceInfo[h.i];
+  return { body: h.body, i: h.i, p: h.point, n: info.t === 'PLANE' ? info.n : h.normal, t: info.t };
+}
+function toggleModelSel(h) {
+  const list = h.kind === 'edge' ? app.msel.edges : app.msel.faces;
+  const i = list.findIndex((r) => r.body === h.body && r.i === h.i);
+  if (i >= 0) list.splice(i, 1); else list.push(h.kind === 'edge' ? edgeRefOf(h) : faceRefOf(h));
+  render3D();
+  renderSelbar();
+}
+function clearModelSel() {
+  app.msel = { edges: [], faces: [] };
+  render3D();
+  renderSelbar();
+}
+function selBodies() { return [...new Set([...app.msel.edges, ...app.msel.faces].map((r) => r.body))]; }
+/** Valori iniziali di un comando presi dalla selezione fatta nel modello. */
+function presetFromSelection(type) {
+  const { edges, faces } = app.msel;
+  if (!edges.length && !faces.length) return null;
+  const strip = (r) => ({ ...r });
+  if ((type === 'fillet' || type === 'chamfer') && edges.length) return { edges: edges.map(strip) };
+  if (type === 'shell' && faces.length) return { faces: faces.map(strip) };
+  if (type === 'move') return { bodies: selBodies() };
+  if ((type === 'pattern' || type === 'mirror') && selBodies().length === 1) return { src: { body: selBodies()[0] } };
+  if (type === 'combine' && selBodies().length >= 2) return { target: selBodies()[0], tools: selBodies().slice(1) };
+  return null;
+}
+function renderSelbar() {
+  const bar = $('#selbar');
+  const { edges, faces } = app.msel;
+  if (app.mode !== 'model' || (!edges.length && !faces.length)) { bar.hidden = true; return; }
+  hideQuick();
+  const parts = [];
+  if (edges.length) parts.push(`${edges.length} ${edges.length === 1 ? 'spigolo' : 'spigoli'}`);
+  if (faces.length) parts.push(`${faces.length} ${faces.length === 1 ? 'faccia' : 'facce'}`);
+  const btn = (cmd, ic, label) => `<button class="btn" data-scmd="${cmd}">${icon(ic, 18)} ${label}</button>`;
+  bar.hidden = false;
+  bar.innerHTML = `<span><b>${parts.join(' · ')}</b> selezionati</span>
+    ${edges.length ? btn('fillet', 'fillet', 'Raccordo') + btn('chamfer', 'chamfer', 'Smusso') : ''}
+    ${faces.length ? btn('shell', 'shell', 'Guscio') : ''}
+    ${btn('move', 'move', 'Sposta corpo')}
+    <button class="icon" data-sclear aria-label="Deseleziona">${icon('close', 18)}</button>`;
+}
+$('#selbar').addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.dataset.sclear !== undefined) clearModelSel();
+  else if (t.dataset.scmd) openCommand(t.dataset.scmd);
 });
 /** Tocco su una forma chiusa di uno schizzo: comandi rapidi. */
 function regionMenu(h, x, y) {
@@ -342,6 +402,12 @@ function regionMenu(h, x, y) {
 }
 
 vp.hoverHandler = (x, y) => {
+  if (app.mode === 'model') {
+    const h = x == null ? null : vp.pick(x, y, { edge: true, face: true }, 9);
+    const k = h ? `${h.kind}${h.body}${h.i}` : '';
+    if (k !== app.hoverKey) { app.hoverKey = k; vp.setPreselect(h); }
+    return;
+  }
   if (app.mode !== 'command') { if (vp.preselect) vp.setPreselect(null); return; }
   const fld = activePickField();
   if (x == null || !fld || !['edge', 'face', 'planarFace'].includes(fld.pick)) { if (vp.preselect) vp.setPreselect(null); return; }
@@ -423,7 +489,10 @@ function openCommand(type, existing = null, preset = null) {
   const spec = COMMANDS[type];
   const index = existing ? app.doc.features.findIndex((f) => f.id === existing.id) : insertIndex();
   const ctx = commandCtx(index);
-  const draft = existing ? clone(existing) : { id: fid(), ...spec.init(ctx), ...(preset || {}) };
+  const pre = preset || (existing ? null : presetFromSelection(type));
+  const draft = existing ? clone(existing) : { id: fid(), ...spec.init(ctx), ...(pre || {}) };
+  app.msel = { edges: [], faces: [] };
+  $('#selbar').hidden = true;
   app.cmd = { type, spec, draft, index, editing: !!existing, ctx, active: null };
   app.mode = 'command';
   const picks = visibleFields().filter((f) => f.kind === 'pick');
@@ -578,7 +647,8 @@ const SKETCH_TOOLS = [
   { group: 'Misura' },
   ['dim', 'Quota', 'tool'],
   { group: 'Modifica' },
-  ['fillet', 'Raccordo', 'tool', 'sfillet'], ['mirror', 'Specchia', 'tool', 'smirror'], ['construction', 'Costruzione', 'act'], ['trash', 'Elimina', 'act'],
+  ['trim', 'Taglia', 'tool'], ['offset', 'Offset', 'tool', 'cmd:offset'], ['fillet', 'Raccordo', 'tool', 'cmd:sfillet'], ['chamfer', 'Smusso', 'tool', 'cmd:schamfer'],
+  ['mirror', 'Specchia', 'tool', 'cmd:smirror'], ['construction', 'Costruzione', 'act'], ['trash', 'Elimina', 'act'],
   { group: 'Vincoli' },
   ['coincident', 'Coincidente', 'cons'], ['horizontal', 'Orizzontale', 'cons'], ['vertical', 'Verticale', 'cons'],
   ['parallel', 'Parallela', 'cons'], ['perpendicular', 'Perpendic.', 'cons'], ['tangent', 'Tangente', 'cons'],
@@ -634,18 +704,19 @@ function renderSketchUi(st) {
   renderSketchInput(st);
 }
 
-/** Barra sotto lo schizzo: valori esatti durante il disegno, oppure conferma dello specchio. */
+/** Sotto lo schizzo: barra delle misure (dito) o campi accanto al cursore (mouse); pannello dei comandi a campi. */
 function renderSketchInput(st) {
-  const bar = $('#sketchInput');
-  if (st.mirror) {
-    bar.hidden = false;
-    bar.dataset.kind = 'mirror';
-    bar.innerHTML = `<span class="lbl">${icon('mirror', 18)} Specchia</span><span class="info">${st.mirror.axis ? 'Asse scelto' : 'Scegli l\'asse'} · ${st.mirror.n} elementi</span>
-      <button class="btn" data-mcancel>Annulla</button><button class="btn primary" data-mapply ${st.mirror.axis && st.mirror.n ? '' : 'disabled'}>Specchia</button>`;
-    return;
-  }
+  renderSketchPanel(st.cmd);
+  const bar = $('#sketchInput'), dyn = $('#dynInput');
   const ex = st.exact;
-  if (!ex) { bar.hidden = true; bar.dataset.kind = ''; return; }
+  if (!ex || st.cmd) { hideBox(bar); hideBox(dyn); return; }
+  if (st.lastPointer === 'mouse') { hideBox(bar); renderDyn(ex); } else { hideBox(dyn); renderBar(ex); }
+}
+function hideBox(el) { el.hidden = true; el.dataset.kind = ''; }
+
+// --- barra in basso (dito / Pencil) ---
+function renderBar(ex) {
+  const bar = $('#sketchInput');
   bar.hidden = false;
   if (bar.dataset.kind === ex.kind) {
     // stessa forma: aggiorno solo i valori suggeriti, senza toccare quello che si sta scrivendo
@@ -656,13 +727,7 @@ function renderSketchInput(st) {
   bar.innerHTML = `<span class="lbl">Misure esatte</span>${ex.fields.map((f) => `<label class="xf"><span>${esc(f.label)}</span><input data-k="${f.k}" placeholder="${esc(f.ph)}" inputmode="decimal" autocomplete="off" autocapitalize="off" spellcheck="false"><em>${esc(f.unit)}</em></label>`).join('')}
     <button class="btn primary" data-xok>Inserisci</button>`;
 }
-$('#sketchInput').addEventListener('click', (e) => {
-  const t = e.target.closest('button');
-  if (!t) return;
-  if (t.dataset.mapply !== undefined) sketcher.mirrorApply();
-  else if (t.dataset.mcancel !== undefined) { sketcher.cancel(); sketcher.setTool('select'); }
-  else if (t.dataset.xok !== undefined) submitExact();
-});
+$('#sketchInput').addEventListener('click', (e) => { if (e.target.closest('[data-xok]')) submitExact(); });
 $('#sketchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitExact(); } });
 function submitExact() {
   const bar = $('#sketchInput');
@@ -678,6 +743,118 @@ function submitExact() {
     // se la catena di linee continua, il cursore torna sul primo campo
     setTimeout(() => { const i = $('#sketchInput input'); if (i) i.focus(); }, 30);
   }
+}
+
+// --- campi accanto al cursore (mouse e tastiera, come in Fusion) ---
+function renderDyn(ex) {
+  const dyn = $('#dynInput');
+  dyn.hidden = false;
+  if (dyn.dataset.kind !== ex.kind) {
+    dyn.dataset.kind = ex.kind;
+    dyn.innerHTML = ex.fields.map((f) => `<label class="df" title="${esc(f.label)}"><input data-k="${f.k}" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="${esc(f.label)}"><em>${esc(f.unit)}</em><b class="lock" title="Valore bloccato">${icon('fix', 12)}</b></label>`).join('')
+      + '<span class="dhint">scrivi · Tab cambia campo · Invio conferma</span>';
+  }
+  const locks = sketcher.lockExpr || {};
+  for (const f of ex.fields) {
+    const i = dyn.querySelector(`input[data-k="${f.k}"]`);
+    if (!i) continue;
+    if (document.activeElement !== i) i.value = locks[f.k] ?? '';
+    i.placeholder = f.ph;
+    i.parentElement.classList.toggle('locked', locks[f.k] != null);
+  }
+  placeDyn();
+}
+function placeDyn() {
+  const dyn = $('#dynInput');
+  const a = sketcher.exactAnchor();
+  if (!a || dyn.hidden) return;
+  const x = Math.min(vp.w - dyn.offsetWidth - 8, a[0] + 22), y = Math.min(vp.h - dyn.offsetHeight - 8, a[1] + 22);
+  dyn.style.left = Math.max(8, x) + 'px';
+  dyn.style.top = Math.max(8, y) + 'px';
+}
+sketcher.onCursor = () => {
+  if (app.mode !== 'sketch') return;
+  const st = sketcher.statusInfo();
+  if (st.exact && st.lastPointer === 'mouse' && !st.cmd) renderDyn(st.exact); else renderSketchInput(st);
+};
+const dynBox = $('#dynInput');
+dynBox.addEventListener('input', (e) => {
+  const i = e.target;
+  if (!i.dataset.k) return;
+  const ok = sketcher.setLock(i.dataset.k, i.value);
+  i.parentElement.classList.toggle('bad', !ok);
+  i.parentElement.classList.toggle('locked', ok && !!i.value.trim());
+});
+dynBox.addEventListener('keydown', (e) => {
+  const inputs = [...dynBox.querySelectorAll('input')];
+  const idx = inputs.indexOf(e.target);
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const n = inputs[(idx + (e.shiftKey ? -1 : 1) + inputs.length) % inputs.length];
+    n.focus(); n.select();
+  } else if (e.key === 'Enter') { e.preventDefault(); commitDyn(); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.target.blur(); sketcher.cancel(); renderTopbar(); }
+  e.stopPropagation();
+});
+function commitDyn() {
+  const lock = { ...(sketcher.lockExpr || {}) };
+  if (!Object.keys(lock).length) { toast('Scrivi un valore, oppure clicca nel disegno', 'warn'); return; }
+  if (document.activeElement) document.activeElement.blur();
+  dynBox.dataset.kind = '';
+  const scope = evalParams(app.doc.params).scope;
+  sketcher.placeExact(lock, (x) => evaluate(x, scope));
+}
+/** Da tastiera: un numero scritto mentre si disegna va subito nel primo campo. */
+function dynTyping(e) {
+  if (app.mode !== 'sketch' || dynBox.hidden || e.ctrlKey || e.metaKey || e.altKey) return false;
+  if (!/^[0-9.,\-(]$/.test(e.key) && e.key !== 'Tab') return false;
+  const inputs = [...dynBox.querySelectorAll('input')];
+  if (!inputs.length) return false;
+  e.preventDefault();
+  const i = e.key === 'Tab' ? inputs[Math.min(1, inputs.length - 1)] : inputs[0];
+  i.focus();
+  if (e.key !== 'Tab') { i.value = e.key; sketcher.setLock(i.dataset.k, i.value); i.parentElement.classList.add('locked'); }
+  return true;
+}
+
+// --- pannello dei comandi a campi dello schizzo (Specchia, Raccordo, Smusso, Offset) ---
+function renderSketchPanel(info) {
+  const el = $('#panel');
+  if (app.mode !== 'sketch') return;
+  if (!info) { el.hidden = true; el.innerHTML = ''; return; }
+  const fk = document.activeElement && el.contains(document.activeElement) ? document.activeElement.dataset.skk : null;
+  const caret = fk ? document.activeElement.selectionStart : null;
+  el.hidden = false;
+  const what = { curves: ['elemento', 'elementi'], line: ['linea', 'linee'], corner: ['angolo', 'angoli'], chain: ['tratto', 'tratti'] };
+  const rows = info.fields.map((f) => {
+    if (f.kind === 'pick') {
+      const n = f.value.length, w = what[f.what], on = info.active === f.k;
+      return `<div class="field"><label>${esc(f.label)}</label><div class="pick ${on ? 'on' : ''} ${n ? 'has' : ''}" data-skpick="${f.k}"><span class="dot"></span><span class="txt">${n ? `${n} ${n === 1 ? w[0] : w[1]}` : 'Nessuna selezione'}</span>${n ? `<button class="clr" data-skclear="${f.k}" aria-label="Svuota">${icon('close', 16)}</button>` : ''}</div>${on ? `<div class="val">${esc(f.hint)}</div>` : ''}</div>`;
+    }
+    if (f.kind === 'num') {
+      return `<div class="field"><label>${esc(f.label)}</label><div class="num"><button data-skstep="-1" data-k="${f.k}" aria-label="meno">−</button><input data-skk="${f.k}" value="${esc(f.value)}" inputmode="decimal" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="unit">${esc(f.unit)}</span><button data-skstep="1" data-k="${f.k}" aria-label="più">+</button></div></div>`;
+    }
+    return `<div class="field row"><label>${esc(f.label)}</label><button class="switch ${f.value ? 'on' : ''}" data-sktoggle="${f.k}" role="switch" aria-checked="${!!f.value}"><span></span></button></div>`;
+  }).join('');
+  el.innerHTML = `<header>${icon(SKETCH_CMDS[info.type].icon)}<h2>${esc(info.title)}</h2></header><div class="fields">${rows}</div>
+    <footer><button class="btn" data-skcancel>Annulla</button><button class="btn primary" data-skok ${info.ready ? '' : 'disabled'}>OK</button></footer>`;
+  if (fk) { const i = el.querySelector(`input[data-skk="${fk}"]`); if (i) { i.focus(); try { i.setSelectionRange(caret, caret); } catch { /* */ } } }
+}
+function sketchPanelClick(e) {
+  const t = e.target.closest('button,[data-skpick]');
+  if (!t) return;
+  if (t.dataset.skcancel !== undefined) sketcher.cmdCancel();
+  else if (t.dataset.skok !== undefined) sketcher.cmdApply();
+  else if (t.dataset.skclear) { e.stopPropagation(); sketcher.cmdClear(t.dataset.skclear); }
+  else if (t.dataset.skpick) sketcher.cmdSetActive(t.dataset.skpick);
+  else if (t.dataset.skstep) {
+    const k = t.dataset.k;
+    let v;
+    try { v = evaluate(sketcher.cmd.vals[k], evalParams(app.doc.params).scope); } catch { return; }
+    const step = Math.abs(v) < 5 ? 0.5 : 1;
+    sketcher.cmdSetVal(k, fmt(Math.max(step, v + step * Number(t.dataset.skstep))));
+  } else if (t.dataset.sktoggle) sketcher.cmdSetVal(t.dataset.sktoggle, !sketcher.cmd.vals[t.dataset.sktoggle]);
+  renderTopbar();
 }
 
 // ---------- pannello comando ----------
@@ -736,6 +913,7 @@ function renderPanel() {
 
 const panel = $('#panel');
 panel.addEventListener('click', (e) => {
+  if (app.mode === 'sketch') { sketchPanelClick(e); return; }
   const d = app.cmd && app.cmd.draft;
   if (!d) return;
   const t = e.target.closest('button,[data-pick]');
@@ -772,6 +950,7 @@ panel.addEventListener('click', (e) => {
   schedulePreview();
 });
 panel.addEventListener('input', (e) => {
+  if (app.mode === 'sketch') { if (e.target.dataset.skk) sketcher.cmdSetVal(e.target.dataset.skk, e.target.value); return; }
   const d = app.cmd && app.cmd.draft;
   if (!d) return;
   if (e.target.dataset.k) {
@@ -789,6 +968,7 @@ panel.addEventListener('change', (e) => {
   schedulePreview();
 });
 panel.addEventListener('keydown', (e) => {
+  if (app.mode === 'sketch') { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); e.target.blur(); sketcher.cmdApply(); renderTopbar(); } return; }
   if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.target.blur(); refresh().then(() => { if (readyToCommit(app.cmd?.draft || {})) okCommand(); }); }
 });
 
@@ -964,10 +1144,11 @@ function openParams() {
 function importModel() {
   const inp = document.createElement('input');
   inp.type = 'file';
-  inp.accept = '.stl,.step,.stp';
+  inp.accept = '.stl,.step,.stp,.svg';
   inp.onchange = async () => {
     const file = inp.files[0];
     if (!file) return;
+    if (/\.svg$/i.test(file.name)) { importSvg(file); return; }
     if (file.size > 25e6) { toast('File troppo grande (max 25 MB)', 'warn'); return; }
     const buf = new Uint8Array(await file.arrayBuffer());
     let bin = '';
@@ -977,6 +1158,45 @@ function importModel() {
     commit((d) => { d.features.splice(insertIndex(), 0, f); if (d.rollback != null) d.rollback += 1; });
   };
   inp.click();
+}
+
+/** SVG → nuovo schizzo: piano, dimensione finale e posizione si scelgono nella finestra. */
+async function importSvg(file) {
+  let data;
+  try { data = readSvg(await file.text()); } catch (e) { toast(e.message, 'warn'); return; }
+  const { box } = data;
+  let plane = 'XY', anchor = 'center';
+  const name = file.name.replace(/\.svg$/i, '');
+  modal(`<h2>Importa SVG come schizzo</h2>
+    <p class="note"><b>${esc(file.name)}</b> · misure nel file: ${fmt(box.w, 2)} × ${fmt(box.h, 2)} mm${data.skipped ? ` · ${data.skipped} elementi non importabili (testi o riferimenti: convertili in tracciati)` : ''}</p>
+    <div class="field"><label>Piano</label><div class="seg wide"><button data-pl="XY" class="on">XY <small>pianta</small></button><button data-pl="XZ">XZ <small>fronte</small></button><button data-pl="YZ">YZ <small>lato</small></button></div></div>
+    <div class="field"><label>Larghezza finale (le proporzioni restano)</label><div class="num"><input data-w value="${fmt(box.w, 2)}" inputmode="decimal" autocomplete="off"><span class="unit">mm</span></div><div class="val" data-h></div></div>
+    <div class="field"><label>Posizione</label><div class="seg"><button data-an="center" class="on">Centrato sull'origine</button><button data-an="corner">Angolo in basso a sinistra sull'origine</button></div></div>
+    <div class="field row"><label>Blocca la forma importata <small class="note">(consigliato: lo schizzo resta veloce)</small></label><button class="switch on" data-fix role="switch"><span></span></button></div>
+    <footer><button class="btn" data-close>Annulla</button><button class="btn primary" data-go>Importa</button></footer>`, (el, close) => {
+    const w = el.querySelector('[data-w]'), hEl = el.querySelector('[data-h]');
+    const upd = () => { const v = parseFloat(w.value.replace(',', '.')); hEl.textContent = v > 0 ? `altezza ${fmt((box.h * v) / box.w, 2)} mm` : 'valore non valido'; hEl.classList.toggle('bad', !(v > 0)); };
+    upd();
+    w.oninput = upd;
+    el.addEventListener('click', (e) => {
+      const t = e.target.closest('button');
+      if (!t) return;
+      if (t.dataset.pl) { plane = t.dataset.pl; el.querySelectorAll('[data-pl]').forEach((b) => b.classList.toggle('on', b === t)); }
+      else if (t.dataset.an) { anchor = t.dataset.an; el.querySelectorAll('[data-an]').forEach((b) => b.classList.toggle('on', b === t)); }
+      else if (t.dataset.fix !== undefined) t.classList.toggle('on');
+      else if (t.dataset.go !== undefined) {
+        const v = parseFloat(w.value.replace(',', '.'));
+        if (!(v > 0)) return;
+        const { geo, stats } = svgToSketch(data, { scale: box.w > 0 ? v / box.w : 1, anchor, fixed: el.querySelector('[data-fix]').classList.contains('on') });
+        const sk = { id: fid(), type: 'sketch', name, plane: { std: plane }, geo: [...newSketchGeo(), ...geo], cons: [] };
+        close();
+        commit((d) => { d.features.splice(insertIndex(), 0, sk); if (d.rollback != null) d.rollback += 1; });
+        toast(`Importati ${stats.lines} segmenti, ${stats.arcs} archi, ${stats.circles} cerchi`, 'ok');
+        showQuick(sk);
+        vp.view(plane === 'XY' ? 'top' : plane === 'XZ' ? 'front' : 'right');
+      }
+    });
+  });
 }
 
 function openExport(ids = null) {
@@ -1191,7 +1411,7 @@ function renderAll() {
   renderBrowser();
   document.body.dataset.mode = app.mode;
   $('#sketchStatus').hidden = app.mode !== 'sketch';
-  if (app.mode !== 'model') hideQuick();
+  if (app.mode !== 'model') { hideQuick(); $('#selbar').hidden = true; }
   if (app.mode === 'model' || app.mode === 'sketch') setHint('');
   renderWelcome();
 }
@@ -1228,9 +1448,10 @@ const HELP = {
       ['extrude', 'Estrudi: tocca dentro una forma chiusa azzurra e scegli lo spessore. «Taglia» la scava dentro un corpo.'],
       ['revolve', 'Rivoluzione: fa ruotare una forma attorno a un asse (X, Y, Z o una linea dello schizzo), come al tornio.'],
       ['hole', 'Foro: tocca una faccia piana dove forare, anche più punti. Diametro, profondità o passante, lamatura.'],
+      ['svg', 'Importa: STL e STEP diventano corpi; un SVG diventa uno schizzo (scegli piano e larghezza), pronto da estrudere.'],
     ]],
     ['Modificare', [
-      ['fillet', 'Raccordo e Smusso: tocca gli spigoli da arrotondare o smussare.'],
+      ['fillet', 'Raccordo e Smusso: tocca gli spigoli da arrotondare o smussare. Puoi anche selezionarli prima nel modello (tocco sugli spigoli) e poi premere il comando, o usare i pulsanti della barra di selezione.'],
       ['shell', 'Guscio: tocca le facce da togliere, il pezzo si svuota con lo spessore scelto.'],
       ['combine', 'Combina: unisce, sottrae o interseca corpi diversi.'],
       ['pattern', 'Serie: ripete una feature o un corpo in fila o in cerchio. Specchio: lo copia simmetrico rispetto a un piano.'],
@@ -1245,15 +1466,17 @@ const HELP = {
       ['line', 'Linea: tocca un punto dopo l\'altro; la catena continua finché non torni al primo punto. Doppio tocco o Esc per fermarti.'],
       ['rect', 'Rettangolo: due angoli opposti. Cerchio: centro e raggio. Arco: inizio, fine e un punto di passaggio.'],
       ['point', 'Punto: punti liberi, ad esempio i centri dei fori.'],
-      ['dim', 'Misure esatte: mentre disegni compare in basso la barra per scrivere lunghezza e angolo, larghezza e altezza, diametro.'],
+      ['dim', 'Misure esatte. Col dito: mentre disegni compare in basso la barra per lunghezza e angolo, larghezza e altezza, diametro. Col mouse: scrivi subito il numero, Tab passa all\'angolo, Invio conferma; il valore scritto si blocca e il punto segue il mouse solo sull\'altra misura.'],
     ]],
     ['Quote', [
       ['dim', 'Quota: tocca una linea (lunghezza), un cerchio (diametro), due punti (distanza) o due linee (angolo). Tocca una quota esistente per cambiarla; accetta parametri.'],
     ]],
     ['Modificare', [
       ['select', 'Seleziona: trascina punti e linee; un dito sul vuoto sposta la vista.'],
-      ['fillet', 'Raccordo: tocca l\'angolo tra due linee e scrivi il raggio.'],
-      ['mirror', 'Specchia: tocca prima la linea di simmetria (anche un asse tratteggiato), poi gli elementi da copiare, poi «Specchia». La copia resta simmetrica anche se modifichi l\'originale.'],
+      ['trim', 'Taglia: tocca il pezzo di linea o cerchio da togliere; si taglia tra gli incroci con le altre curve.'],
+      ['offset', 'Offset: tocca un contorno (si prende tutto il tratto collegato), scrivi la distanza; «Dall\'altro lato» lo sposta dentro/fuori.'],
+      ['fillet', 'Raccordo e Smusso: tocca gli angoli (anche più di uno) e scrivi raggio o distanza. Se avevi già selezionato angoli o coppie di linee, sono già dentro.'],
+      ['mirror', 'Specchia: il pannello ha due campi, Oggetti e Linea di specchio. Tocca un campo per attivarlo, poi tocca nel disegno. La copia resta simmetrica anche se modifichi l\'originale.'],
       ['construction', 'Costruzione: trasforma le linee selezionate in tratteggiate di riferimento (non formano profili, servono come aiuto o asse).'],
     ]],
     ['Vincoli', [
@@ -1290,12 +1513,13 @@ $('#viewbar').addEventListener('click', (e) => {
 });
 
 window.addEventListener('keydown', (e) => {
+  if (!e.target.closest('input,select,textarea') && $('#modal').hidden && dynTyping(e)) return;
   if (e.target.closest('input,select,textarea') || !$('#modal').hidden) return;
   const k = e.key.toLowerCase();
   if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return; }
   if (app.mode === 'sketch') {
-    const map = { l: 'line', r: 'rect', c: 'circle', a: 'arc', p: 'point', d: 'dim', s: 'select' };
+    const map = { l: 'line', r: 'rect', c: 'circle', a: 'arc', p: 'point', d: 'dim', s: 'select', t: 'trim', o: 'cmd:offset', m: 'cmd:smirror', f: 'cmd:sfillet' };
     if (map[k] && !e.ctrlKey && !e.metaKey) { sketcher.setTool(map[k]); renderTopbar(); }
     else if (k === 'delete' || k === 'backspace') sketcher.deleteSelection();
     else if (k === 'escape') { if (!sketcher.cancel()) sketcher.setTool('select'); renderTopbar(); }
@@ -1303,6 +1527,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (k === 'escape') {
+    if (app.mode === 'model' && (app.msel.edges.length || app.msel.faces.length)) { clearModelSel(); return; }
     if (app.mode === 'command') cancelCommand();
     else if (app.mode === 'pickPlane') { app.mode = 'model'; renderAll(); render3D(); }
     return;

@@ -57,7 +57,7 @@ try {
 
   await step('misure esatte: rettangolo 30 x 20 con la barra', async () => {
     await tool('Rettangolo');
-    await page.mouse.click(X(100), Y(50));
+    await page.touchscreen.tap(X(100), Y(50)); // col dito compare la barra in basso
     await page.waitForSelector('#sketchInput:not([hidden]) input[data-k="w"]');
     await page.fill('#sketchInput input[data-k="w"]', '30');
     await page.fill('#sketchInput input[data-k="h"]', '20');
@@ -67,7 +67,8 @@ try {
     if (d.join() !== '30,20') throw new Error('quote ' + d);
     // linea con lunghezza e angolo
     await tool('Linea');
-    await page.mouse.click(X(100), Y(-150));
+    await page.touchscreen.tap(X(100), Y(-150));
+    await page.waitForSelector('#sketchInput:not([hidden]) input[data-k="len"]');
     await page.fill('#sketchInput input[data-k="len"]', '25');
     await page.fill('#sketchInput input[data-k="ang"]', '30');
     await page.press('#sketchInput input[data-k="ang"]', 'Enter');
@@ -102,7 +103,6 @@ try {
   await step('specchia il triangolo sull\'asse Y', async () => {
     const n0 = (await sk()).geo;
     await tool('Specchia');
-    await page.mouse.click(X(0), Y(-250)); // asse Y tratteggiato
     const lines = await page.evaluate(() => {
       const s = window.officina.sketcher;
       const r = s.svg.getBoundingClientRect();
@@ -110,9 +110,11 @@ try {
       return s.sk.geo.filter((g) => g.type === 'line' && !g.ref).filter((g) => { const a = s.P(g.p1_id), b = s.P(g.p2_id); return (a.x < -1 || b.x < -1) && a.x < 0.01 && b.x < 0.01; })
         .map((g) => { const a = s.P(g.p1_id), b = s.P(g.p2_id); const v = s.toS(a.x * 0.6 + b.x * 0.4, a.y * 0.6 + b.y * 0.4); return [v[0] + r.left, v[1] + r.top]; });
     });
-    for (const p of lines) await page.mouse.click(...p);
+    for (const p of lines) await page.mouse.click(...p); // campo "Oggetti" attivo all'apertura
+    await page.click('#panel [data-skpick="axis"]');
+    await page.mouse.click(X(0), Y(-250)); // asse Y tratteggiato
     await page.screenshot({ path: 'out/33-specchia-scelta.png' });
-    await page.click('#sketchInput [data-mapply]');
+    await page.click('#panel [data-skok]');
     await page.waitForTimeout(200);
     const s = await sk();
     console.log('   elementi', n0, '->', s.geo, 'regioni', s.regions);
@@ -128,9 +130,8 @@ try {
     });
     await tool('Raccordo');
     await page.mouse.click(...p);
-    await page.waitForSelector('#modal:not([hidden]) input.big');
-    await page.fill('#modal input.big', '4');
-    await page.click('#modal [data-ok]');
+    await page.fill('#panel input[data-skk="r"]', '4');
+    await page.click('#panel [data-skok]');
     await page.waitForTimeout(300);
     const arcs = await page.evaluate(() => window.officina.sketcher.sk.geo.filter((g) => g.type === 'arc').length);
     if (arcs !== 1) throw new Error('archi ' + arcs);

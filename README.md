@@ -14,6 +14,17 @@ gusci e fori, e si esporta in 3MF/STL per la stampa o in STEP per altri CAD.
   (lunghezza/angolo, larghezza/altezza, diametro), che diventano quote. I vincoli si usano come strumenti:
   tocchi il vincolo e poi gli elementi. Nello schizzo ci sono anche **Specchia** (asse, elementi, conferma: la copia
   resta simmetrica) e **Raccordo 2D** sugli angoli tra due linee.
+- **Da PC, come in Fusion**: mentre disegni, scrivi direttamente il numero (va nella lunghezza), **Tab** passa
+  all'angolo (o all'altezza), **Invio** conferma; i valori scritti restano bloccati e il punto segue il mouse solo
+  sull'altra misura. Su iPad resta la barra delle misure in basso.
+- **Strumenti dello schizzo a campi**: Specchia (Oggetti + Linea di specchio), Raccordo e Smusso 2D (Angoli +
+  misura), Offset (Contorno + distanza + lato), più **Taglia** a tocco. Quello che hai selezionato prima entra già
+  nei campi.
+- **Selezione nel 3D**: tocchi spigoli e facce, compare la barra con Raccordo/Smusso/Guscio/Sposta; anche i comandi
+  della barra in alto usano la selezione già fatta.
+- **Import SVG** come schizzo: piano, larghezza finale e posizione si scelgono all'import; le curve di Bézier
+  diventano archi (scarto massimo 0,02 mm). La forma importata è bloccata di default per tenere lo schizzo veloce
+  (si sblocca con il vincolo Fissa).
 - **Guida**: scheda di benvenuto sul progetto vuoto, pulsante «?» sempre disponibile, suggerimenti passo per passo
   nello schizzo e nei comandi; dopo uno schizzo compaiono le azioni rapide Estrudi/Rivoluzione, e toccando una forma
   azzurra nel modello si apre il menu per estruderla.

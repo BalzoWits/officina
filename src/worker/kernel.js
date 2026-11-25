@@ -28,10 +28,23 @@ function loopDrawing(segs) {
   if (segs.length === 1 && segs[0].k === 'circle') return R.drawCircle(segs[0].r).translate(segs[0].c[0], segs[0].c[1]);
   if (segs.length === 1 && segs[0].k === 'arc') return R.drawCircle(segs[0].r).translate(segs[0].c[0], segs[0].c[1]);
   let pen = R.draw(segs[0].a);
-  for (const s of segs) {
-    if (s.k === 'line') pen = pen.lineTo(s.b);
-    else pen = pen.threePointsArcTo(s.b, s.m);
-  }
+  let cur = segs[0].a;
+  const d2 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+  segs.forEach((s, i) => {
+    const last = i === segs.length - 1;
+    // pezzi nulli (restano da incroci quasi coincidenti): si saltano, tranne l'ultimo che chiude
+    if (d2(cur, s.b) < 1e-6 && !last) return;
+    if (s.k === 'arc') {
+      const chord = d2(cur, s.b);
+      const sag = chord > 1e-9 ? Math.abs((s.b[0] - cur[0]) * (s.m[1] - cur[1]) - (s.b[1] - cur[1]) * (s.m[0] - cur[0])) / chord : 0;
+      // archi minuscoli o quasi piatti: OpenCascade non riesce a costruirli, diventano segmenti
+      if (chord > 1e-4 && sag > 1e-6) {
+        try { pen = pen.threePointsArcTo(s.b, s.m); cur = s.b; return; } catch { /* sotto: segmento */ }
+      }
+    }
+    if (!(last && d2(cur, segs[0].a) < 1e-6)) pen = pen.lineTo(s.b);
+    cur = s.b;
+  });
   return pen.close();
 }
 function regionDrawing(rg) {
@@ -243,9 +256,16 @@ function profileSketch(st, ctx, f) {
   const picked = (f.regions || []).map((ref) => matchRegion(regions, ref)).filter(Boolean);
   if (!picked.length) throw new Error('Nessun profilo selezionato');
   const uniq = [...new Set(picked)];
-  let d = regionDrawing(uniq[0]);
-  for (const r of uniq.slice(1)) d = d.fuse(regionDrawing(r));
-  return { drawing: d, frame: fr.frame, body: fr.body };
+  // ogni regione resta un disegno a sé: le unioni 2D con archi falliscono spesso,
+  // si uniscono poi i solidi in 3D (operazione robusta in OpenCascade)
+  return { drawings: uniq.map(regionDrawing), frame: fr.frame, body: fr.body };
+}
+
+/** Un solido per regione, poi l'unione. */
+function solidOfRegions(drawings, make) {
+  let out = null;
+  for (const d of drawings) { const s = make(d.clone()); out = out ? out.fuse(s) : s; }
+  return out;
 }
 
 const FEATURES = {
@@ -267,7 +287,7 @@ const FEATURES = {
   },
 
   extrude(st, f, ctx) {
-    const { drawing, frame, body } = profileSketch(st, ctx, f);
+    const { drawings, frame, body } = profileSketch(st, ctx, f);
     let d1 = ctx.ev(f.dist);
     let d2 = f.mode === 'two' ? ctx.ev(f.dist2) : 0;
     let dir = frame.n;
@@ -276,7 +296,7 @@ const FEATURES = {
     if (Math.abs(d1) < 1e-9 && f.mode !== 'two') throw new Error('Distanza nulla');
     const mk = (dist, direction, shift) => {
       const pl = new R.Plane(add(frame.o, shift), frame.x, frame.n);
-      return drawing.clone().sketchOnPlane(pl).extrude(dist, { extrusionDirection: direction });
+      return solidOfRegions(drawings, (d) => d.sketchOnPlane(pl).extrude(dist, { extrusionDirection: direction }));
     };
     let tool;
     if (f.mode === 'sym') tool = mk(d1, dir, mul(dir, -d1 / 2));
@@ -292,7 +312,7 @@ const FEATURES = {
   },
 
   revolve(st, f, ctx) {
-    const { drawing, frame, body } = profileSketch(st, ctx, f);
+    const { drawings, frame, body } = profileSketch(st, ctx, f);
     let origin, axis;
     if (f.axis && f.axis.line) {
       const sk = ctx.doc.features.find((x) => x.id === f.sketch);
@@ -308,7 +328,7 @@ const FEATURES = {
     let angle = ctx.ev(f.angle ?? 360);
     if (f.flip) angle = -angle;
     if (Math.abs(angle) < 1e-9) throw new Error('Angolo nullo');
-    const tool = drawing.sketchOnPlane(toPlane(frame)).revolve(axis, { origin, angle });
+    const tool = solidOfRegions(drawings, (d) => d.sketchOnPlane(toPlane(frame)).revolve(axis, { origin, angle }));
     const res = applyOp(st, f, tool, f.op || 'new', body);
     st.tools.set(f.id, { tool, ...res });
   },
