@@ -485,8 +485,8 @@ export class Sketcher {
   hintText() {
     const t = this.tool, st = this.state;
     if (t === 'line') return st ? 'Tocca il punto successivo · torna al primo punto per chiudere · doppio tocco o Esc per finire' : 'Tocca (o trascina) per il primo punto della linea';
-    if (t === 'rect') return st ? 'Tocca l\'angolo opposto (o scrivi le misure qui sotto)' : 'Tocca il primo angolo del rettangolo';
-    if (t === 'circle') return st ? 'Tocca per il raggio (o scrivi il diametro qui sotto)' : 'Tocca il centro del cerchio';
+    if (t === 'rect') return st ? 'Tocca l\'angolo opposto (o scrivi le misure)' : 'Tocca il primo angolo del rettangolo';
+    if (t === 'circle') return st ? 'Tocca per il raggio (o scrivi il diametro)' : 'Tocca il centro del cerchio';
     if (t === 'arc') return !st ? 'Tocca l\'inizio dell\'arco' : st.pts.length === 1 ? 'Tocca la fine dell\'arco' : 'Tocca un punto per cui passa l\'arco';
     if (t === 'point') return 'Tocca per aggiungere un punto (serve ad esempio come centro dei fori)';
     if (t === 'dim') return st && st.items && st.items.length ? 'Tocca un secondo elemento, oppure un punto vuoto per quotare la lunghezza' : 'Tocca una linea, un cerchio o due punti da quotare';
