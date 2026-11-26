@@ -53,6 +53,7 @@ const P = {
   cloudoff: '<path d="M7 18h10a4 4 0 00.6-7.95A6 6 0 006.1 9.2 4.5 4.5 0 007 18z"/><path d="M4 4l16 16"/>',
   cloudwarn: '<path d="M7 18h10a4 4 0 00.6-7.95A6 6 0 006.1 9.2 4.5 4.5 0 007 18z"/><path d="M12 10.5v3M12 15.6v.1"/>',
   cloudsync: '<path d="M7 18h10a4 4 0 00.6-7.95A6 6 0 006.1 9.2 4.5 4.5 0 007 18z"/><path d="M9.5 13a2.5 2.5 0 014.6-1.3M14.5 14a2.5 2.5 0 01-4.6 1.3"/>',
+  polygon: '<path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"/>',
   magnet: '<path d="M6 3v8a6 6 0 0012 0V3"/><path d="M6 3h4v8a2 2 0 004 0V3h4"/><path d="M6 7h4M14 7h4"/>',
   svg: '<path d="M4 18c3-10 6-12 8-6s5 4 8-6"/><circle cx="4" cy="18" r="1.6"/><circle cx="20" cy="6" r="1.6"/>',
   finish: '<path d="M4 12l5 5L20 6"/>',

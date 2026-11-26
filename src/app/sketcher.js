@@ -294,7 +294,7 @@ export class Sketcher {
     if (t === 'line') {
       if (!this.state) { this.state = { kind: 'line', start: pl(), fresh: true }; } else this.state.fresh = false;
       this.state.cur = pl();
-    } else if (t === 'rect' || t === 'circle' || t === 'rect3' || t === 'circle2') {
+    } else if (t === 'rect' || t === 'circle' || t === 'poly') {
       if (!this.state) this.state = { kind: t, start: pl(), fresh: true }; else this.state.fresh = false;
       this.state.cur = pl();
     } else if (t === 'arc') {
@@ -354,6 +354,11 @@ export class Sketcher {
       const gx = cur.x < s.x ? -1 : 1, gy = cur.y < s.y ? -1 : 1;
       return { x: L.w != null ? s.x + gx * L.w : cur.x, y: L.h != null ? s.y + gy * L.h : cur.y };
     }
+    if (st.kind === 'poly' && st.start && L.size != null) {
+      const s = st.start;
+      const u = norm2([cur.x - s.x, cur.y - s.y]);
+      return { x: s.x + (u[0] || 1) * L.size / 2, y: s.y + u[1] * L.size / 2 };
+    }
     if (st.kind === 'circle' && st.start && L.d != null) {
       const s = st.start;
       const u = norm2([cur.x - s.x, cur.y - s.y]);
@@ -365,6 +370,8 @@ export class Sketcher {
   /** Blocca (o sblocca con valore vuoto) una misura scritta da tastiera. */
   setLock(k, expr) {
     this.locks ||= {}; this.lockExpr ||= {};
+    // il numero di lati non è una misura: cambia subito il poligono
+    if (k === 'n') { try { if (String(expr).trim()) this.setPolyN(this.evalExpr(expr)); } catch { return false; } if (this.lastCursor) this.trackCursor(...this.lastCursor, this.lastPointer || 'mouse'); return true; }
     if (expr == null || String(expr).trim() === '') { delete this.locks[k]; delete this.lockExpr[k]; } else {
       let v;
       try { v = this.evalExpr(expr); } catch { return false; }
@@ -412,7 +419,7 @@ export class Sketcher {
     const st = this.state;
     if (!st) return;
     const cur = this.placement(sx, sy, e.pointerType);
-    if (this.hasLocks() && !st.fresh && (st.kind === 'line' || st.kind === 'rect' || st.kind === 'circle')) {
+    if (this.hasLocks() && !st.fresh && (st.kind === 'line' || st.kind === 'rect' || st.kind === 'circle' || st.kind === 'poly')) {
       st.cur = this.applyLocks(cur);
       this.placeExact({ ...this.lockExpr }, (x) => this.evalExpr(x));
       return;
@@ -438,11 +445,12 @@ export class Sketcher {
       this.changed();
       return;
     }
-    if (st.kind === 'rect' || st.kind === 'circle') {
+    if (st.kind === 'rect' || st.kind === 'circle' || st.kind === 'poly') {
       const a = st.start;
       if (Math.hypot(cur.x - a.x, cur.y - a.y) * this.view.s < 4) { this.render(); return; }
       this.push();
       if (st.kind === 'rect') this.makeRect(a, cur);
+      else if (st.kind === 'poly') this.makePoly(a, this.polyGeom(a, cur));
       else {
         const c = this.materialize(a);
         const cp = this.P(c);
@@ -478,6 +486,64 @@ export class Sketcher {
     return { p1, p2, p3, p4, l1, l2, l3, l4 };
   }
 
+  // ---------- poligono regolare ----------
+  setPolyN(n) {
+    const v = Math.round(Number(n));
+    if (!(v >= 3 && v <= 12)) throw new Error('Lati da 3 a 12');
+    this.polyN = v;
+    if (this.onPolyPrefs) this.onPolyPrefs();
+  }
+  setPolyMode(m) { this.polyMode = m === 'corners' ? 'corners' : 'flats'; if (this.onPolyPrefs) this.onPolyPrefs(); if (this.lastCursor) this.trackCursor(...this.lastCursor, this.lastPointer || 'mouse'); this.emit(); }
+
+  /**
+   * Vertici dal centro e dal punto del dito: con "lati piatti" il punto è a metà di un lato, con "angoli" è un vertice.
+   * half: se dato, è metà della misura (apotema o raggio) e il punto decide solo la rotazione.
+   */
+  polyGeom(c, p, half = null) {
+    const n = this.polyN;
+    const flats = this.polyMode === 'flats';
+    let th = Math.atan2(p.y - c.y, p.x - c.x);
+    // col magnete la rotazione va a scatti di 15°
+    if (this.snapGrid) th = Math.round(th / (Math.PI / 12)) * (Math.PI / 12);
+    const d = half != null ? half : Math.hypot(p.x - c.x, p.y - c.y);
+    const R = flats ? d / Math.cos(Math.PI / n) : d;
+    const rot = flats ? th - Math.PI / n : th;
+    const verts = [];
+    for (let i = 0; i < n; i++) verts.push([c.x + R * Math.cos(rot + (TAU * i) / n), c.y + R * Math.sin(rot + (TAU * i) / n)]);
+    return { R, apo: R * Math.cos(Math.PI / n), rot, verts };
+  }
+
+  /** Crea il poligono già vincolato: lati uguali, vertici su un cerchio di costruzione; quota se scritta. */
+  makePoly(start, g, expr = null) {
+    const cId = this.materialize(start);
+    const C = this.P(cId);
+    const n = g.verts.length;
+    const kOut = this.nid('k');
+    this.sk.geo.push({ id: kOut, type: 'circle', c_id: cId, radius: g.R, construction: true });
+    const pts = g.verts.map(([x, y]) => { const id = this.nid('p'); this.sk.geo.push({ id, type: 'point', x, y, fixed: false }); return id; });
+    const lines = pts.map((p, i) => this.addLine(p, pts[(i + 1) % n], false));
+    for (const p of pts) this.sk.cons.push({ id: this.nid('c'), type: 'point_on_circle', p_id: p, c_id: kOut });
+    for (let i = 1; i < n; i++) this.sk.cons.push({ id: this.nid('c'), type: 'equal_length', l1_id: lines[0], l2_id: lines[i] });
+    // un lato orizzontale (o verticale) resta tale
+    const side = lines.findIndex((l, i) => { const a = g.verts[i], b = g.verts[(i + 1) % n]; return Math.abs(a[1] - b[1]) < 1e-6; });
+    const vside = side < 0 ? lines.findIndex((l, i) => { const a = g.verts[i], b = g.verts[(i + 1) % n]; return Math.abs(a[0] - b[0]) < 1e-6; }) : -1;
+    if (side >= 0) this.sk.cons.push({ id: this.nid('c'), type: 'horizontal_l', l_id: lines[side] });
+    else if (vside >= 0) this.sk.cons.push({ id: this.nid('c'), type: 'vertical_l', l_id: lines[vside] });
+    if (expr != null) {
+      const ang = g.rot + Math.PI / n;
+      if (this.polyMode === 'flats') {
+        // cerchio interno tangente ai lati: la sua quota è la misura tra i lati piatti
+        const kIn = this.nid('k');
+        this.sk.geo.push({ id: kIn, type: 'circle', c_id: cId, radius: g.apo, construction: true });
+        this.sk.cons.push({ id: this.nid('c'), type: 'tangent_lc', l_id: lines[0], c_id: kIn });
+        this.sk.cons.push({ id: this.nid('d'), type: 'circle_diameter', c_id: kIn, diameter: 2 * g.apo, expr, lx: C.x + Math.cos(ang) * g.R * 1.35, ly: C.y + Math.sin(ang) * g.R * 1.35 });
+      } else {
+        this.sk.cons.push({ id: this.nid('d'), type: 'circle_diameter', c_id: kOut, diameter: 2 * g.R, expr, lx: C.x + Math.cos(ang) * g.R * 1.35, ly: C.y + Math.sin(ang) * g.R * 1.35 });
+      }
+    }
+    return { cId, pts, lines };
+  }
+
   // ---------- strumenti "a tocchi" ----------
   isTapTool() { return this.tool === 'dim' || this.tool === 'trim' || this.tool.startsWith('cmd:') || this.tool.startsWith('c:'); }
 
@@ -487,6 +553,7 @@ export class Sketcher {
     if (t === 'line') return st ? 'Tocca il punto successivo · torna al primo punto per chiudere · doppio tocco o Esc per finire' : 'Tocca (o trascina) per il primo punto della linea';
     if (t === 'rect') return st ? 'Tocca l\'angolo opposto (o scrivi le misure)' : 'Tocca il primo angolo del rettangolo';
     if (t === 'circle') return st ? 'Tocca per il raggio (o scrivi il diametro)' : 'Tocca il centro del cerchio';
+    if (t === 'poly') return st ? `Tocca per grandezza e rotazione (${this.polyMode === 'flats' ? 'il punto è a metà di un lato' : 'il punto è un vertice'}) o scrivi la misura` : `Poligono a ${this.polyN} lati: tocca il centro`;
     if (t === 'arc') return !st ? 'Tocca l\'inizio dell\'arco' : st.pts.length === 1 ? 'Tocca la fine dell\'arco' : 'Tocca un punto per cui passa l\'arco';
     if (t === 'point') return 'Tocca per aggiungere un punto (serve ad esempio come centro dei fori)';
     if (t === 'dim') return st && st.items && st.items.length ? 'Tocca un secondo elemento, oppure un punto vuoto per quotare la lunghezza' : 'Tocca una linea, un cerchio o due punti da quotare';
@@ -522,6 +589,18 @@ export class Sketcher {
     if (st.kind === 'circle' && st.start) {
       const c = st.cur || st.start;
       return { kind: 'circle', fields: [{ k: 'd', label: 'Diametro', unit: 'mm', ph: fmt(2 * Math.hypot(c.x - st.start.x, c.y - st.start.y), 2) }] };
+    }
+    if (st.kind === 'poly' && st.start) {
+      const g = this.polyGeom(st.start, st.cur || st.start);
+      const flats = this.polyMode === 'flats';
+      return {
+        kind: `poly-${this.polyMode}`,
+        fields: [
+          { k: 'size', label: flats ? 'Tra i lati piatti' : 'Tra gli angoli', unit: 'mm', ph: fmt(2 * (flats ? g.apo : g.R), 2) },
+          { k: 'n', label: 'Lati', unit: '', ph: String(this.polyN) },
+        ],
+        choice: { k: 'mode', value: this.polyMode, options: [['flats', 'Lati piatti'], ['corners', 'Angoli']] },
+      };
     }
     return null;
   }
@@ -566,6 +645,15 @@ export class Sketcher {
       const off = 18 / this.view.s;
       if (W) this.sk.cons.push({ id: this.nid('d'), type: 'p2p_distance', p1_id: r.p1, p2_id: r.p2, distance: w, expr: W.expr, lx: (A.x + C.x) / 2, ly: Math.min(A.y, C.y) - off });
       if (H) this.sk.cons.push({ id: this.nid('d'), type: 'p2p_distance', p1_id: r.p2, p2_id: r.p3, distance: h, expr: H.expr, lx: Math.max(A.x, C.x) + off, ly: (A.y + C.y) / 2 });
+      this.state = null;
+    } else if (ef.kind.startsWith('poly')) {
+      const Z = num('size');
+      if (vals.n != null && String(vals.n).trim() !== '') this.setPolyN(ev(vals.n));
+      const g0 = this.polyGeom(st.start, st.cur || st.start);
+      const size = Z ? Z.v : 2 * (this.polyMode === 'flats' ? g0.apo : g0.R);
+      if (!(size > 0)) { this.undoStack.pop(); return false; }
+      const g = this.polyGeom(st.start, st.cur || st.start, size / 2);
+      this.makePoly(st.start, g, Z ? Z.expr : null);
       this.state = null;
     } else if (ef.kind === 'circle') {
       const D = num('d');
@@ -1681,6 +1769,13 @@ export class Sketcher {
       out.push(`<circle cx="${f1(ax)}" cy="${f1(ay)}" r="${f1(r * this.view.s)}" class="sk-preview"/><circle cx="${f1(ax)}" cy="${f1(ay)}" r="3" class="sk-pt sel"/>`);
       const [bx, by] = S(cur.x, cur.y);
       out.push(`<text x="${f1(bx + 14)}" y="${f1(by - 14)}" class="sk-hint">⌀ ${fmt(r * 2, 2)}</text>`);
+    } else if (st.kind === 'poly') {
+      const g = this.polyGeom(st.start, cur);
+      const pts = g.verts.map(([x, y]) => S(x, y).map(f1).join(' '));
+      const [cx, cy] = S(st.start.x, st.start.y);
+      out.push(`<path d="M${pts.join('L')}Z" class="sk-preview"/><circle cx="${f1(cx)}" cy="${f1(cy)}" r="${f1(g.R * this.view.s)}" class="sk-preview thin"/><circle cx="${f1(cx)}" cy="${f1(cy)}" r="3" class="sk-pt sel"/>`);
+      const [bx, by] = S(cur.x, cur.y);
+      out.push(`<text x="${f1(bx + 14)}" y="${f1(by - 14)}" class="sk-hint">${this.polyN} lati · ${this.polyMode === 'flats' ? 'lati piatti' : 'angoli'} ${fmt(2 * (this.polyMode === 'flats' ? g.apo : g.R), 2)} mm</text>`);
     } else if (st.kind === 'arc') {
       const pts = [...st.pts, cur];
       for (const p of st.pts) { const [x, y] = S(p.x, p.y); out.push(`<circle cx="${f1(x)}" cy="${f1(y)}" r="4" class="sk-pt sel"/>`); }

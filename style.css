@@ -407,3 +407,7 @@ button.icon.cloud.warn, button.icon.cloud.error { color: var(--warn); }
 .conflict { display: grid; gap: 8px; margin-top: 14px; }
 .conflict .btn { height: auto; min-height: 56px; flex-direction: column; align-items: flex-start; padding: 8px 16px; }
 .conflict .btn small { font-weight: 400; font-size: 12.5px; opacity: .85; }
+
+.seg.xchoice { flex: none; padding: 2px; }
+.seg.xchoice button { min-height: 32px; font-size: 13px; }
+#dynInput .seg.xchoice button { min-height: 26px; font-size: 12px; padding: 0 6px; }

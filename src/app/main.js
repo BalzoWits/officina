@@ -863,7 +863,7 @@ const MODEL_TOOLS = [
 // [icona, etichetta, tipo, nome strumento se diverso dall'icona]
 const SKETCH_TOOLS = [
   { group: 'Disegna' },
-  ['select', 'Seleziona', 'tool'], ['line', 'Linea', 'tool'], ['rect', 'Rettangolo', 'tool'], ['circle', 'Cerchio', 'tool'],
+  ['select', 'Seleziona', 'tool'], ['line', 'Linea', 'tool'], ['rect', 'Rettangolo', 'tool'], ['circle', 'Cerchio', 'tool'], ['polygon', 'Poligono', 'tool', 'poly'],
   ['arc', 'Arco', 'tool'], ['point', 'Punto', 'tool'], ['magnet', 'Magnete', 'toggle'],
   { group: 'Misura' },
   ['dim', 'Quota', 'tool'],
@@ -949,11 +949,25 @@ function renderBar(ex) {
     return;
   }
   bar.dataset.kind = ex.kind;
-  bar.innerHTML = `<span class="lbl">Misure esatte</span>${ex.fields.map((f) => `<label class="xf"><span>${esc(f.label)}</span><input data-k="${f.k}" placeholder="${esc(f.ph)}" inputmode="decimal" autocomplete="off" autocapitalize="off" spellcheck="false"><em>${esc(f.unit)}</em></label>`).join('')}
+  bar.innerHTML = `<span class="lbl">Misure esatte</span>${choiceHtml(ex)}${ex.fields.map((f) => `<label class="xf"><span>${esc(f.label)}</span><input data-k="${f.k}" placeholder="${esc(f.ph)}" inputmode="decimal" autocomplete="off" autocapitalize="off" spellcheck="false"><em>${esc(f.unit)}</em></label>`).join('')}
     <button class="btn primary" data-xok>Inserisci</button>`;
 }
-$('#sketchInput').addEventListener('click', (e) => { if (e.target.closest('[data-xok]')) submitExact(); });
+$('#sketchInput').addEventListener('click', (e) => {
+  const c = e.target.closest('[data-pchoice]');
+  if (c) { sketcher.setPolyMode(c.dataset.pchoice); return; }
+  if (e.target.closest('[data-xok]')) submitExact();
+});
+/** Scelta tra due modi di misurare (poligono: tra i lati piatti / tra gli angoli). */
+function choiceHtml(ex) {
+  if (!ex.choice) return '';
+  return `<span class="seg xchoice">${ex.choice.options.map(([v, l]) => `<button data-pchoice="${v}" class="${ex.choice.value === v ? 'on' : ''}">${esc(l)}</button>`).join('')}</span>`;
+}
 $('#sketchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitExact(); } });
+// il numero di lati del poligono si vede subito nell'anteprima
+$('#sketchInput').addEventListener('input', (e) => {
+  if (e.target.dataset.k !== 'n' || !e.target.value.trim()) return;
+  try { sketcher.setPolyN(evaluate(e.target.value, evalParams(app.doc.params).scope)); sketcher.render(); } catch { /* valore non valido: si aspetta */ }
+});
 function submitExact() {
   const bar = $('#sketchInput');
   const vals = {};
@@ -976,7 +990,7 @@ function renderDyn(ex) {
   dyn.hidden = false;
   if (dyn.dataset.kind !== ex.kind) {
     dyn.dataset.kind = ex.kind;
-    dyn.innerHTML = ex.fields.map((f) => `<label class="df" title="${esc(f.label)}"><input data-k="${f.k}" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="${esc(f.label)}"><em>${esc(f.unit)}</em><b class="lock" title="Valore bloccato">${icon('fix', 12)}</b></label>`).join('')
+    dyn.innerHTML = choiceHtml(ex) + ex.fields.map((f) => `<label class="df" title="${esc(f.label)}"><input data-k="${f.k}" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="${esc(f.label)}"><em>${esc(f.unit)}</em><b class="lock" title="Valore bloccato">${icon('fix', 12)}</b></label>`).join('')
       + '<span class="dhint">scrivi · Tab cambia campo · Invio conferma</span>';
   }
   const locks = sketcher.lockExpr || {};
@@ -1003,6 +1017,8 @@ sketcher.onCursor = () => {
   if (st.exact && st.lastPointer === 'mouse' && !st.cmd) renderDyn(st.exact); else renderSketchInput(st);
 };
 const dynBox = $('#dynInput');
+dynBox.addEventListener('mousedown', (e) => { if (e.target.closest('[data-pchoice]')) e.preventDefault(); });
+dynBox.addEventListener('click', (e) => { const c = e.target.closest('[data-pchoice]'); if (c) sketcher.setPolyMode(c.dataset.pchoice); });
 dynBox.addEventListener('input', (e) => {
   const i = e.target;
   if (!i.dataset.k) return;
@@ -1708,6 +1724,7 @@ const HELP = {
     ['Disegnare', [
       ['line', 'Linea: tocca un punto dopo l\'altro; la catena continua finché non torni al primo punto. Doppio tocco o Esc per fermarti.'],
       ['rect', 'Rettangolo: due angoli opposti. Cerchio: centro e raggio. Arco: inizio, fine e un punto di passaggio.'],
+      ['polygon', 'Poligono: esagono, ottagono… (da 3 a 12 lati). Tocca il centro, poi grandezza e rotazione. Nella barra scegli se la misura è tra i lati piatti (la chiave, es. dado M5 = 8 mm) o tra gli angoli. Resta regolare anche cambiando la quota.'],
       ['point', 'Punto: punti liberi, ad esempio i centri dei fori.'],
       ['dim', 'Misure esatte. Col dito: mentre disegni compare in basso la barra per lunghezza e angolo, larghezza e altezza, diametro. Col mouse: scrivi subito il numero, Tab passa all\'angolo, Invio conferma; il valore scritto si blocca e il punto segue il mouse solo sull\'altra misura.'],
     ]],
@@ -1785,6 +1802,11 @@ window.addEventListener('keydown', (e) => {
 // evita lo zoom della pagina col doppio tocco e il pinch fuori dalla vista (iPad)
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => { if (!e.target.closest('input')) e.preventDefault(); });
+
+// poligono: numero di lati e modo di misura ricordati
+try { sketcher.polyN = Math.min(12, Math.max(3, Number(localStorage.getItem('officina.polyN')) || 6)); } catch { sketcher.polyN = 6; }
+try { sketcher.polyMode = localStorage.getItem('officina.polyMode') === 'corners' ? 'corners' : 'flats'; } catch { sketcher.polyMode = 'flats'; }
+sketcher.onPolyPrefs = () => { try { localStorage.setItem('officina.polyN', String(sketcher.polyN)); localStorage.setItem('officina.polyMode', sketcher.polyMode); } catch { /* */ } };
 
 // magnete sulla griglia: acceso salvo scelta diversa ricordata
 try { sketcher.snapGrid = localStorage.getItem('officina.snap') !== '0'; } catch { sketcher.snapGrid = true; }
